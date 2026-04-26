@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build artifacts
+build/out/
+releases/*.zip
+*.log
+
+# Local runtime
+config.json
+state.json
+*.pfx
+*.p12
+*.pem
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
