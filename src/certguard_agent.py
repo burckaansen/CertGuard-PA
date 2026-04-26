@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -40,12 +41,18 @@ DEFAULT_CONFIG = {
     "pfx_path": "",
     "pfx_password": "",
     "expected_domain": "",
+    "commit_after_import": False,
     "policy": {
         "import_if_pa_cert_missing": True,
         "block_on_domain_mismatch": True,
         "auto_import_only_if_expiring": True,
         "auto_import_expiry_threshold_days": 7,
         "require_local_newer_or_different": True
+    },
+    "deploy": {
+        "retry_count": 3,
+        "retry_delay_seconds": 5,
+        "verify_after_import": True
     },
     "service": {
         "interval_seconds": 60
@@ -288,6 +295,37 @@ def palo_request(config, params, timeout=180):
         raise PaloApiError(f"Palo Alto API request failed: {exc}") from exc
 
 
+def palo_multipart_import(config, params, file_path, timeout=240):
+    boundary = "----certguard-pa-" + uuid.uuid4().hex
+    file_data = Path(file_path).read_bytes()
+    file_name = Path(file_path).name
+    body = bytearray()
+    body.extend(f"--{boundary}\r\n".encode("ascii"))
+    body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode("ascii"))
+    body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
+    body.extend(file_data)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("ascii"))
+
+    query = dict(params)
+    query["key"] = config.get("palo_api_key", "")
+    url = f"https://{config['firewall_host']}/api/?{urllib.parse.urlencode(query)}"
+    request = urllib.request.Request(
+        url=url,
+        data=bytes(body),
+        method="POST",
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, context=ssl_context(bool(config.get("skip_tls_validation", True))), timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise PaloApiError(f"Palo Alto import request failed: {exc}") from exc
+
+
 def parse_palo_response(xml_text):
     try:
         root = ET.fromstring(xml_text)
@@ -306,6 +344,17 @@ def parse_palo_response(xml_text):
 def palo_op(config, cmd_xml):
     xml_text = palo_request(config, {"type": "op", "cmd": cmd_xml})
     return parse_palo_response(xml_text), xml_text
+
+
+def palo_commit(config):
+    xml_text = palo_request(config, {"type": "commit", "cmd": "<commit></commit>"}, timeout=240)
+    root = parse_palo_response(xml_text)
+    job_id = ""
+    job_node = root.find(".//job")
+    if job_node is not None and job_node.text:
+        job_id = job_node.text.strip()
+    log(f"Commit request submitted job={job_id}")
+    return {"submitted": True, "job_id": job_id}
 
 
 def test_palo_api():
@@ -425,21 +474,17 @@ def evaluate_policy(compare_result):
     cfg = load_config()
     policy = cfg.get("policy", {})
     reasons = []
-
     if policy.get("block_on_domain_mismatch", True) and not compare_result.get("domain_match", False):
         return {"action": "block", "should_import": False, "reason": "Local PFX certificate does not match expected domain"}
-
     if not compare_result.get("remote_found", False):
         if policy.get("import_if_pa_cert_missing", True):
             return {"action": "import", "should_import": True, "reason": "Palo Alto certificate is missing and first import is enabled"}
         return {"action": "skip", "should_import": False, "reason": "Palo Alto certificate is missing and first import is disabled"}
-
     if policy.get("require_local_newer_or_different", True):
         if compare_result.get("same_fingerprint", False):
             return {"action": "skip", "should_import": False, "reason": "Local and Palo Alto certificates have the same fingerprint"}
         if not compare_result.get("local_newer", False):
             reasons.append("local certificate is not newer")
-
     if policy.get("auto_import_only_if_expiring", True):
         threshold = int(policy.get("auto_import_expiry_threshold_days", 7))
         remote_days_left = compare_result.get("remote_days_left")
@@ -447,10 +492,8 @@ def evaluate_policy(compare_result):
             return {"action": "skip", "should_import": False, "reason": "Palo Alto certificate expiry could not be determined"}
         if remote_days_left > threshold:
             return {"action": "skip", "should_import": False, "reason": f"Palo Alto certificate has {remote_days_left} days left; threshold is {threshold}"}
-
     if reasons:
         return {"action": "skip", "should_import": False, "reason": "; ".join(reasons)}
-
     return {"action": "import", "should_import": True, "reason": "Policy matched"}
 
 
@@ -466,11 +509,103 @@ def policy_decision():
     return result
 
 
+def import_certificate_once():
+    cfg = load_config()
+    local = inspect_configured_pfx()
+    params = {
+        "type": "import",
+        "category": "keypair",
+        "certificate-name": cfg.get("certificate_name", ""),
+        "format": "pkcs12",
+        "passphrase": cfg.get("pfx_password", ""),
+    }
+    xml_text = palo_multipart_import(cfg, params, Path(cfg.get("pfx_path", "")))
+    parse_palo_response(xml_text)
+    log(f"Certificate import completed: {cfg.get('certificate_name')}")
+    result = {"imported": True, "local_fingerprint_sha256": local.get("fingerprint_sha256")}
+    return result
+
+
+def verify_import(expected_fingerprint):
+    try:
+        remote = inspect_pa_certificate()
+    except PaloCertificateNotFound:
+        return {"verified": False, "reason": "certificate not found after import"}
+    expected = normalize_fingerprint(expected_fingerprint)
+    actual = normalize_fingerprint(remote.get("fingerprint_sha256"))
+    if expected and actual and expected == actual:
+        return {"verified": True, "reason": "fingerprint matched", "remote": remote}
+    if not actual:
+        return {"verified": True, "reason": "certificate found but Palo fingerprint was not available", "remote": remote}
+    return {"verified": False, "reason": "fingerprint mismatch", "remote": remote}
+
+
+def deploy_certificate(force=False):
+    cfg = load_config()
+    state = load_state()
+    deploy_cfg = cfg.get("deploy", {})
+    retry_count = int(deploy_cfg.get("retry_count", 3))
+    retry_delay = int(deploy_cfg.get("retry_delay_seconds", 5))
+    verify_after_import = bool(deploy_cfg.get("verify_after_import", True))
+
+    decision_result = policy_decision()
+    decision = decision_result.get("decision", {})
+    if not force and not decision.get("should_import", False):
+        result = {"deployed": False, "skipped": True, "reason": decision.get("reason", "policy skipped")}
+        state["last_deploy"] = result
+        state["last_deploy_time"] = utc_now_text()
+        save_state(state)
+        log(f"Deploy skipped: {result['reason']}")
+        return result
+
+    last_error = ""
+    for attempt in range(1, retry_count + 1):
+        try:
+            log(f"Deployment attempt {attempt}/{retry_count}")
+            import_result = import_certificate_once()
+            verify_result = {"verified": True, "reason": "verification disabled"}
+            if verify_after_import:
+                verify_result = verify_import(import_result.get("local_fingerprint_sha256"))
+                if not verify_result.get("verified"):
+                    raise PaloApiError(f"Import verification failed: {verify_result.get('reason')}")
+            commit_result = {"submitted": False, "reason": "commit disabled"}
+            if bool(cfg.get("commit_after_import", False)):
+                commit_result = palo_commit(cfg)
+            result = {
+                "deployed": True,
+                "skipped": False,
+                "attempt": attempt,
+                "import": import_result,
+                "verify": verify_result,
+                "commit": commit_result,
+            }
+            state["last_deploy"] = result
+            state["last_deploy_time"] = utc_now_text()
+            state["last_deploy_error"] = ""
+            save_state(state)
+            log("Deployment completed successfully")
+            return result
+        except Exception as exc:
+            last_error = str(exc)
+            log(f"Deployment attempt {attempt} failed: {last_error}")
+            if attempt < retry_count:
+                time.sleep(retry_delay)
+    result = {"deployed": False, "skipped": False, "error": last_error}
+    state["last_deploy"] = result
+    state["last_deploy_time"] = utc_now_text()
+    state["last_deploy_error"] = last_error
+    save_state(state)
+    raise CertGuardError(f"Deployment failed after {retry_count} attempts: {last_error}")
+
+
 def service_tick():
     log("Service tick executed")
     try:
         result = policy_decision()
-        log(f"Policy tick completed: action={result['decision']['action']}")
+        action = result["decision"]["action"]
+        log(f"Policy tick completed: action={action}")
+        if result["decision"].get("should_import"):
+            deploy_certificate(force=False)
     except Exception as exc:
         log(f"Policy tick failed: {exc}")
 
@@ -505,6 +640,8 @@ def main():
     sub.add_parser("inspect-pa-cert")
     sub.add_parser("compare")
     sub.add_parser("policy")
+    sub.add_parser("deploy")
+    sub.add_parser("force-deploy")
     args = parser.parse_args()
     try:
         if args.cmd == "service-loop":
@@ -521,6 +658,10 @@ def main():
             print_json(compare_certificates())
         elif args.cmd == "policy":
             print_json(policy_decision())
+        elif args.cmd == "deploy":
+            print_json(deploy_certificate(force=False))
+        elif args.cmd == "force-deploy":
+            print_json(deploy_certificate(force=True))
     except CertGuardError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
