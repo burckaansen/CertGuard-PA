@@ -8,6 +8,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+try:
+    from certguard_secrets import encrypt_config_secrets
+except Exception:
+    def encrypt_config_secrets(config):
+        return config
+
 BASE_DIR = Path(r"C:\ProgramData\CertGuard-PA")
 CONFIG_PATH = BASE_DIR / "config.json"
 AGENT_PATH = BASE_DIR / "certguard_agent.py"
@@ -15,10 +21,12 @@ AGENT_PATH = BASE_DIR / "certguard_agent.py"
 DEFAULTS = {
     "firewall_host": "",
     "palo_api_key": "",
+    "palo_api_key_dpapi": "",
     "skip_tls_validation": True,
     "certificate_name": "LE-test-example",
     "pfx_path": r"C:\certs\test.example.com.pfx",
     "pfx_password": "",
+    "pfx_password_dpapi": "",
     "expected_domain": "test.example.com",
     "commit_after_import": False,
     "policy": {
@@ -60,7 +68,18 @@ def load_config():
 
 def save_config(data):
     BASE_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    existing = load_config()
+    secure_data = encrypt_config_secrets(data)
+
+    if not secure_data.get("palo_api_key_dpapi") and existing.get("palo_api_key_dpapi"):
+        secure_data["palo_api_key_dpapi"] = existing.get("palo_api_key_dpapi")
+    if not secure_data.get("pfx_password_dpapi") and existing.get("pfx_password_dpapi"):
+        secure_data["pfx_password_dpapi"] = existing.get("pfx_password_dpapi")
+
+    secure_data.pop("palo_api_key", None)
+    secure_data.pop("pfx_password", None)
+
+    CONFIG_PATH.write_text(json.dumps(secure_data, indent=2), encoding="utf-8")
 
 
 def run_agent(command):
@@ -128,16 +147,13 @@ def wizard():
         ent.insert(0, str(value or ""))
         entries[key] = ent
         if browse:
-            if browse == "pfx":
-                filetypes = [("PFX/P12 files", "*.pfx *.p12"), ("All files", "*.*")]
-            else:
-                filetypes = [("Executable", "*.exe"), ("All files", "*.*")]
+            filetypes = [("PFX/P12 files", "*.pfx *.p12"), ("All files", "*.*")] if browse == "pfx" else [("Executable", "*.exe"), ("All files", "*.*")]
             ttk.Button(row, text="Browse", command=lambda: browse_file(ent, filetypes)).pack(side="left", padx=(8, 0))
         return ent
 
     p1 = add_page("Step 1 - Palo Alto", "Enter the firewall endpoint and API key.")
     add_entry(p1, "Palo Alto Host", "firewall_host", cfg.get("firewall_host", ""))
-    add_entry(p1, "Palo Alto API Key", "palo_api_key", cfg.get("palo_api_key", ""), secret=True)
+    add_entry(p1, "Palo Alto API Key", "palo_api_key", "", secret=True)
     vars_["skip_tls_validation"] = tk.BooleanVar(value=bool(cfg.get("skip_tls_validation", True)))
     ttk.Checkbutton(p1, text="Skip TLS validation for Palo Alto API", variable=vars_["skip_tls_validation"]).pack(anchor="w", pady=8)
 
@@ -145,7 +161,7 @@ def wizard():
     add_entry(p2, "Certificate Name", "certificate_name", cfg.get("certificate_name", "LE-test-example"))
     add_entry(p2, "Expected FQDN", "expected_domain", cfg.get("expected_domain", "test.example.com"))
     add_entry(p2, "PFX Path", "pfx_path", cfg.get("pfx_path", ""), browse="pfx")
-    add_entry(p2, "PFX Password", "pfx_password", cfg.get("pfx_password", ""), secret=True)
+    add_entry(p2, "PFX Password", "pfx_password", "", secret=True)
 
     p3 = add_page("Step 3 - Policy", "Define when CertGuard-PA should import the certificate.")
     policy = cfg.get("policy", {})
@@ -201,15 +217,13 @@ def wizard():
                 "retry_delay_seconds": int(entries["retry_delay_seconds"].get()),
                 "verify_after_import": bool(vars_["verify_after_import"].get())
             },
-            "service": {
-                "interval_seconds": int(entries["interval_seconds"].get())
-            }
+            "service": {"interval_seconds": int(entries["interval_seconds"].get())}
         }
 
     def save_action():
         try:
             save_config(collect_config())
-            append_log(f"Configuration saved to {CONFIG_PATH}")
+            append_log(f"Configuration saved securely to {CONFIG_PATH}")
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc))
 
@@ -261,7 +275,6 @@ def wizard():
     back_btn.pack(side="left", padx=4)
     next_btn.pack(side="left", padx=4)
     close_btn.pack(side="right", padx=4)
-
     show_page()
     root.mainloop()
 
