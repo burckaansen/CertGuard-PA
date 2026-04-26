@@ -1,14 +1,13 @@
 param(
-    [ValidateSet("Install","Uninstall","Debug")]
+    [ValidateSet("Install","Uninstall","Debug","Gui","Deploy")]
     [string]$Action = "Install"
 )
 
 $InstallDir = "C:\ProgramData\CertGuard-PA"
-$Agent = Join-Path $InstallDir "certguard_agent.py"
 
 function Install-App {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item "..\src\certguard_agent.py" $Agent -Force
+    Copy-Item "..\src\*.py" $InstallDir -Force
     Write-Host "Files deployed"
 }
 
@@ -20,5 +19,7 @@ function Uninstall-App {
 switch ($Action) {
     "Install" { Install-App }
     "Uninstall" { Uninstall-App }
-    "Debug" { python ..\src\certguard_agent.py debug }
+    "Debug" { python "$InstallDir\certguard_agent.py" debug }
+    "Deploy" { python "$InstallDir\certguard_agent.py" deploy }
+    "Gui" { python "$InstallDir\certguard_gui.py" }
 }
