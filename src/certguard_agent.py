@@ -4,6 +4,7 @@
 import argparse
 import json
 import logging
+import re
 import ssl
 import sys
 import time
@@ -26,6 +27,12 @@ except Exception:
     pkcs12 = None
     ExtensionOID = None
     NameOID = None
+
+try:
+    from certguard_eventlog import write_event
+except Exception:
+    def write_event(message, level="INFO", event_id=255):
+        return None
 
 APP_NAME = "CertGuard-PA"
 BASE_DIR = Path(r"C:\ProgramData\CertGuard-PA")
@@ -90,7 +97,22 @@ def ensure_dirs():
 
 def setup_logging():
     ensure_dirs()
+    if logging.getLogger().handlers:
+        return
     logging.basicConfig(filename=str(LOG_PATH), level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def log(message, level="INFO", event_id=255, event=True):
+    setup_logging()
+    print(f"{level}: {message}")
+    if level == "ERROR":
+        logging.error(message)
+    elif level == "WARN":
+        logging.warning(message)
+    else:
+        logging.info(message)
+    if event:
+        write_event(message, level, event_id)
 
 
 def merge_config(base, override):
@@ -129,12 +151,6 @@ def save_state(state):
     STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def log(msg):
-    setup_logging()
-    print(msg)
-    logging.info(msg)
-
-
 def utc_now_text():
     return datetime.now(timezone.utc).isoformat()
 
@@ -157,8 +173,7 @@ def parse_datetime_guess(text):
         except Exception:
             pass
     try:
-        dt = parsedate_to_datetime(raw)
-        return cert_dt_to_utc(dt)
+        return cert_dt_to_utc(parsedate_to_datetime(raw))
     except Exception:
         return None
 
@@ -171,14 +186,17 @@ def normalize_fingerprint(value):
     return (value or "").replace(":", "").replace(" ", "").upper()
 
 
+def require_crypto():
+    if pkcs12 is None or hashes is None or x509 is None:
+        raise DependencyError("Python package 'cryptography' is required")
+
+
 def get_first_name_attribute(cert, oid):
     try:
         values = cert.subject.get_attributes_for_oid(oid)
-        if values:
-            return values[0].value
+        return values[0].value if values else ""
     except Exception:
-        pass
-    return ""
+        return ""
 
 
 def get_san_dns_names(cert):
@@ -210,11 +228,6 @@ def domain_matches_certificate(expected_domain, common_name, san_dns_names):
     return any(wildcard_match(candidate, expected_domain) for candidate in candidates)
 
 
-def require_crypto():
-    if pkcs12 is None or hashes is None or x509 is None:
-        raise DependencyError("Python package 'cryptography' is required")
-
-
 def inspect_pfx(pfx_path, password, expected_domain=""):
     require_crypto()
     pfx_file = Path(pfx_path)
@@ -224,9 +237,8 @@ def inspect_pfx(pfx_path, password, expected_domain=""):
         pfx_bytes = pfx_file.read_bytes()
     except OSError as exc:
         raise PfxParseError(f"Unable to read PFX file: {exc}") from exc
-    password_bytes = None if password is None else str(password).encode("utf-8")
     try:
-        private_key, cert, additional_certs = pkcs12.load_key_and_certificates(pfx_bytes, password_bytes)
+        private_key, cert, additional_certs = pkcs12.load_key_and_certificates(pfx_bytes, None if password is None else str(password).encode("utf-8"))
     except ValueError as exc:
         raise PfxPasswordError("Unable to parse PFX. The file may be corrupt or the password may be incorrect.") from exc
     except Exception as exc:
@@ -239,11 +251,9 @@ def inspect_pfx(pfx_path, password, expected_domain=""):
     except AttributeError:
         not_before = cert_dt_to_utc(cert.not_valid_before)
         not_after = cert_dt_to_utc(cert.not_valid_after)
-    now = datetime.now(timezone.utc)
-    days_left = int((not_after - now).total_seconds() // 86400) if not_after else None
+    days_left = int((not_after - datetime.now(timezone.utc)).total_seconds() // 86400) if not_after else None
     common_name = get_first_name_attribute(cert, NameOID.COMMON_NAME)
     san_dns_names = get_san_dns_names(cert)
-    domain_match = domain_matches_certificate(expected_domain, common_name, san_dns_names)
     return {
         "pfx_path": str(pfx_file),
         "has_private_key": private_key is not None,
@@ -258,7 +268,7 @@ def inspect_pfx(pfx_path, password, expected_domain=""):
         "not_after_utc": not_after.isoformat() if not_after else "",
         "days_left": days_left,
         "expected_domain": expected_domain,
-        "domain_match": domain_match,
+        "domain_match": domain_matches_certificate(expected_domain, common_name, san_dns_names),
     }
 
 
@@ -269,13 +279,12 @@ def inspect_configured_pfx():
     state["last_pfx_inspection"] = result
     state["last_pfx_inspection_time"] = utc_now_text()
     save_state(state)
+    log(f"Local PFX inspected: days_left={result.get('days_left')} domain_match={result.get('domain_match')}", "INFO", 310)
     return result
 
 
 def ssl_context(skip_tls_validation):
-    if skip_tls_validation:
-        return ssl._create_unverified_context()
-    return ssl.create_default_context()
+    return ssl._create_unverified_context() if skip_tls_validation else ssl.create_default_context()
 
 
 def palo_request(config, params, timeout=180):
@@ -297,28 +306,19 @@ def palo_request(config, params, timeout=180):
 
 def palo_multipart_import(config, params, file_path, timeout=240):
     boundary = "----certguard-pa-" + uuid.uuid4().hex
-    file_data = Path(file_path).read_bytes()
-    file_name = Path(file_path).name
+    file_path = Path(file_path)
+    file_data = file_path.read_bytes()
     body = bytearray()
     body.extend(f"--{boundary}\r\n".encode("ascii"))
-    body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode("ascii"))
+    body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'.encode("ascii"))
     body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
     body.extend(file_data)
     body.extend(b"\r\n")
     body.extend(f"--{boundary}--\r\n".encode("ascii"))
-
     query = dict(params)
     query["key"] = config.get("palo_api_key", "")
     url = f"https://{config['firewall_host']}/api/?{urllib.parse.urlencode(query)}"
-    request = urllib.request.Request(
-        url=url,
-        data=bytes(body),
-        method="POST",
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Content-Length": str(len(body)),
-        },
-    )
+    request = urllib.request.Request(url=url, data=bytes(body), method="POST", headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))})
     try:
         with urllib.request.urlopen(request, context=ssl_context(bool(config.get("skip_tls_validation", True))), timeout=timeout) as response:
             return response.read().decode("utf-8", errors="replace")
@@ -333,10 +333,8 @@ def parse_palo_response(xml_text):
         raise PaloApiError(f"Invalid XML response from Palo Alto: {exc}") from exc
     status = root.attrib.get("status", "")
     if status != "success":
-        msg = ""
         msg_node = root.find(".//msg")
-        if msg_node is not None and msg_node.text:
-            msg = msg_node.text.strip()
+        msg = msg_node.text.strip() if msg_node is not None and msg_node.text else ""
         raise PaloApiError(f"Palo Alto API returned status={status} {msg}".strip())
     return root
 
@@ -349,31 +347,23 @@ def palo_op(config, cmd_xml):
 def palo_commit(config):
     xml_text = palo_request(config, {"type": "commit", "cmd": "<commit></commit>"}, timeout=240)
     root = parse_palo_response(xml_text)
-    job_id = ""
     job_node = root.find(".//job")
-    if job_node is not None and job_node.text:
-        job_id = job_node.text.strip()
-    log(f"Commit request submitted job={job_id}")
+    job_id = job_node.text.strip() if job_node is not None and job_node.text else ""
+    log(f"Commit request submitted job={job_id}", "INFO", 370)
     return {"submitted": True, "job_id": job_id}
 
 
 def test_palo_api():
     cfg = load_config()
     root, _ = palo_op(cfg, "<show><system><info></info></system></show>")
-    hostname = ""
-    sw_version = ""
-    host_node = root.find(".//hostname")
-    version_node = root.find(".//sw-version")
-    if host_node is not None and host_node.text:
-        hostname = host_node.text.strip()
-    if version_node is not None and version_node.text:
-        sw_version = version_node.text.strip()
+    hostname = root.findtext(".//hostname", default="").strip()
+    sw_version = root.findtext(".//sw-version", default="").strip()
     result = {"connected": True, "hostname": hostname, "sw_version": sw_version}
     state = load_state()
     state["last_pa_test"] = result
     state["last_pa_test_time"] = utc_now_text()
     save_state(state)
-    log(f"Palo Alto API connected: hostname={hostname} sw_version={sw_version}")
+    log(f"Palo Alto API connected: hostname={hostname} sw_version={sw_version}", "INFO", 320)
     return result
 
 
@@ -381,9 +371,7 @@ def find_pa_cert_block(xml_text, certificate_name):
     if not certificate_name:
         raise PaloApiError("certificate_name is required")
     idx = xml_text.find(certificate_name)
-    if idx < 0:
-        return ""
-    return xml_text[max(0, idx - 1200): idx + 5000]
+    return "" if idx < 0 else xml_text[max(0, idx - 1200): idx + 5000]
 
 
 def extract_first(patterns, text):
@@ -400,6 +388,7 @@ def inspect_pa_certificate():
     _, xml_text = palo_op(cfg, "<show><sslmgr-store><config-certificate-info></config-certificate-info></sslmgr-store></show>")
     block = find_pa_cert_block(xml_text, cert_name)
     if not block:
+        log(f"Certificate not found on Palo Alto: {cert_name}", "WARN", 330)
         raise PaloCertificateNotFound(f"Certificate not found on Palo Alto: {cert_name}")
     expiry_raw = extract_first([
         re.compile(r"(?:not-after|not_after|expiry|expires|expire|valid-to|valid_to)[^A-Za-z0-9]{0,30}([^<\r\n]+)", re.IGNORECASE),
@@ -408,30 +397,21 @@ def inspect_pa_certificate():
     ], block)
     expiry_dt = parse_datetime_guess(expiry_raw)
     days_left = int((expiry_dt - datetime.now(timezone.utc)).total_seconds() // 86400) if expiry_dt else None
-    fingerprint = extract_first([
-        re.compile(r"(?:sha256|sha-256|fingerprint)[^A-Fa-f0-9]*([A-Fa-f0-9:]{40,})", re.IGNORECASE),
-    ], block)
-    serial = extract_first([
-        re.compile(r"(?:serial|serial-number)[^A-Fa-f0-9]*([A-Fa-f0-9:]+)", re.IGNORECASE),
-    ], block)
-    subject = extract_first([
-        re.compile(r"(?:subject|subject-name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE),
-    ], block)
     result = {
         "certificate_name": cert_name,
         "found": True,
         "not_after_raw": expiry_raw,
         "not_after_utc": expiry_dt.isoformat() if expiry_dt else "",
         "days_left": days_left,
-        "fingerprint_sha256": fingerprint,
-        "serial_number_hex": serial,
-        "subject": subject,
+        "fingerprint_sha256": extract_first([re.compile(r"(?:sha256|sha-256|fingerprint)[^A-Fa-f0-9]*([A-Fa-f0-9:]{40,})", re.IGNORECASE)], block),
+        "serial_number_hex": extract_first([re.compile(r"(?:serial|serial-number)[^A-Fa-f0-9]*([A-Fa-f0-9:]+)", re.IGNORECASE)], block),
+        "subject": extract_first([re.compile(r"(?:subject|subject-name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE)], block),
     }
     state = load_state()
     state["last_pa_certificate_inspection"] = result
     state["last_pa_certificate_inspection_time"] = utc_now_text()
     save_state(state)
-    log(f"Palo Alto certificate inspected: name={cert_name} days_left={days_left}")
+    log(f"Palo Alto certificate inspected: name={cert_name} days_left={days_left}", "INFO", 331)
     return result
 
 
@@ -442,37 +422,30 @@ def compare_certificates():
         remote = inspect_pa_certificate()
     except PaloCertificateNotFound as exc:
         remote = {"found": False, "error": str(exc), "certificate_name": cfg.get("certificate_name", "")}
-
     local_fp = normalize_fingerprint(local.get("fingerprint_sha256"))
     remote_fp = normalize_fingerprint(remote.get("fingerprint_sha256"))
-    same_fingerprint = bool(local_fp and remote_fp and local_fp == remote_fp)
-
     local_dt = parse_datetime_guess(local.get("not_after_utc"))
     remote_dt = parse_datetime_guess(remote.get("not_after_utc"))
-    local_newer = bool(local_dt and remote_dt and local_dt > remote_dt)
-
     result = {
         "local": local,
         "remote": remote,
         "remote_found": bool(remote.get("found")),
-        "same_fingerprint": same_fingerprint,
-        "local_newer": local_newer,
+        "same_fingerprint": bool(local_fp and remote_fp and local_fp == remote_fp),
+        "local_newer": bool(local_dt and remote_dt and local_dt > remote_dt),
         "local_days_left": local.get("days_left"),
         "remote_days_left": remote.get("days_left"),
         "domain_match": bool(local.get("domain_match")),
     }
-
     state = load_state()
     state["last_compare"] = result
     state["last_compare_time"] = utc_now_text()
     save_state(state)
-    log(f"Compare completed: remote_found={result['remote_found']} same={same_fingerprint} local_newer={local_newer} domain_match={result['domain_match']}")
+    log(f"Compare completed: remote_found={result['remote_found']} same={result['same_fingerprint']} local_newer={result['local_newer']} domain_match={result['domain_match']}", "INFO", 340)
     return result
 
 
 def evaluate_policy(compare_result):
-    cfg = load_config()
-    policy = cfg.get("policy", {})
+    policy = load_config().get("policy", {})
     reasons = []
     if policy.get("block_on_domain_mismatch", True) and not compare_result.get("domain_match", False):
         return {"action": "block", "should_import": False, "reason": "Local PFX certificate does not match expected domain"}
@@ -505,25 +478,19 @@ def policy_decision():
     state["last_policy_decision"] = result
     state["last_policy_decision_time"] = utc_now_text()
     save_state(state)
-    log(f"Policy decision: action={decision['action']} reason={decision['reason']}")
+    level = "WARN" if decision["action"] in ["import", "block"] else "INFO"
+    log(f"Policy decision: action={decision['action']} reason={decision['reason']}", level, 350)
     return result
 
 
 def import_certificate_once():
     cfg = load_config()
     local = inspect_configured_pfx()
-    params = {
-        "type": "import",
-        "category": "keypair",
-        "certificate-name": cfg.get("certificate_name", ""),
-        "format": "pkcs12",
-        "passphrase": cfg.get("pfx_password", ""),
-    }
+    params = {"type": "import", "category": "keypair", "certificate-name": cfg.get("certificate_name", ""), "format": "pkcs12", "passphrase": cfg.get("pfx_password", "")}
     xml_text = palo_multipart_import(cfg, params, Path(cfg.get("pfx_path", "")))
     parse_palo_response(xml_text)
-    log(f"Certificate import completed: {cfg.get('certificate_name')}")
-    result = {"imported": True, "local_fingerprint_sha256": local.get("fingerprint_sha256")}
-    return result
+    log(f"Certificate import completed: {cfg.get('certificate_name')}", "INFO", 360)
+    return {"imported": True, "local_fingerprint_sha256": local.get("fingerprint_sha256")}
 
 
 def verify_import(expected_fingerprint):
@@ -547,7 +514,6 @@ def deploy_certificate(force=False):
     retry_count = int(deploy_cfg.get("retry_count", 3))
     retry_delay = int(deploy_cfg.get("retry_delay_seconds", 5))
     verify_after_import = bool(deploy_cfg.get("verify_after_import", True))
-
     decision_result = policy_decision()
     decision = decision_result.get("decision", {})
     if not force and not decision.get("should_import", False):
@@ -555,13 +521,12 @@ def deploy_certificate(force=False):
         state["last_deploy"] = result
         state["last_deploy_time"] = utc_now_text()
         save_state(state)
-        log(f"Deploy skipped: {result['reason']}")
+        log(f"Deploy skipped: {result['reason']}", "INFO", 351)
         return result
-
     last_error = ""
     for attempt in range(1, retry_count + 1):
         try:
-            log(f"Deployment attempt {attempt}/{retry_count}")
+            log(f"Deployment attempt {attempt}/{retry_count}", "WARN", 352)
             import_result = import_certificate_once()
             verify_result = {"verified": True, "reason": "verification disabled"}
             if verify_after_import:
@@ -571,23 +536,16 @@ def deploy_certificate(force=False):
             commit_result = {"submitted": False, "reason": "commit disabled"}
             if bool(cfg.get("commit_after_import", False)):
                 commit_result = palo_commit(cfg)
-            result = {
-                "deployed": True,
-                "skipped": False,
-                "attempt": attempt,
-                "import": import_result,
-                "verify": verify_result,
-                "commit": commit_result,
-            }
+            result = {"deployed": True, "skipped": False, "attempt": attempt, "import": import_result, "verify": verify_result, "commit": commit_result}
             state["last_deploy"] = result
             state["last_deploy_time"] = utc_now_text()
             state["last_deploy_error"] = ""
             save_state(state)
-            log("Deployment completed successfully")
+            log("Deployment completed successfully", "INFO", 361)
             return result
         except Exception as exc:
             last_error = str(exc)
-            log(f"Deployment attempt {attempt} failed: {last_error}")
+            log(f"Deployment attempt {attempt} failed: {last_error}", "ERROR", 362)
             if attempt < retry_count:
                 time.sleep(retry_delay)
     result = {"deployed": False, "skipped": False, "error": last_error}
@@ -599,25 +557,25 @@ def deploy_certificate(force=False):
 
 
 def service_tick():
-    log("Service tick executed")
+    log("Service tick executed", "INFO", 301)
     try:
         result = policy_decision()
         action = result["decision"]["action"]
-        log(f"Policy tick completed: action={action}")
+        log(f"Policy tick completed: action={action}", "INFO", 302)
         if result["decision"].get("should_import"):
             deploy_certificate(force=False)
     except Exception as exc:
-        log(f"Policy tick failed: {exc}")
+        log(f"Policy tick failed: {exc}", "ERROR", 303)
 
 
 def service_loop():
     setup_logging()
-    log("Service started")
+    log("Service started", "INFO", 300)
     while True:
         try:
             service_tick()
         except Exception as exc:
-            log(f"Error: {exc}")
+            log(f"Service loop error: {exc}", "ERROR", 304)
         time.sleep(load_config().get("service", {}).get("interval_seconds", 60))
 
 
@@ -626,22 +584,15 @@ def print_json(data):
 
 
 def run_debug():
-    log("Debug mode")
+    log("Debug mode", "INFO", 390)
     service_tick()
 
 
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("service-loop")
-    sub.add_parser("debug")
-    sub.add_parser("inspect-pfx")
-    sub.add_parser("test-pa")
-    sub.add_parser("inspect-pa-cert")
-    sub.add_parser("compare")
-    sub.add_parser("policy")
-    sub.add_parser("deploy")
-    sub.add_parser("force-deploy")
+    for cmd in ["service-loop", "debug", "inspect-pfx", "test-pa", "inspect-pa-cert", "compare", "policy", "deploy", "force-deploy"]:
+        sub.add_parser(cmd)
     args = parser.parse_args()
     try:
         if args.cmd == "service-loop":
@@ -663,12 +614,15 @@ def main():
         elif args.cmd == "force-deploy":
             print_json(deploy_certificate(force=True))
     except CertGuardError as exc:
+        log(f"Command failed: {exc}", "ERROR", 399)
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     except FileNotFoundError as exc:
+        log(f"File not found: {exc}", "ERROR", 398)
         print(f"ERROR: {exc}", file=sys.stderr)
         return 3
     except Exception as exc:
+        log(f"Unexpected failure: {exc}", "ERROR", 397)
         print(f"ERROR: unexpected failure: {exc}", file=sys.stderr)
         return 1
     return 0
