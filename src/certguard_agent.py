@@ -40,6 +40,13 @@ DEFAULT_CONFIG = {
     "pfx_path": "",
     "pfx_password": "",
     "expected_domain": "",
+    "policy": {
+        "import_if_pa_cert_missing": True,
+        "block_on_domain_mismatch": True,
+        "auto_import_only_if_expiring": True,
+        "auto_import_expiry_threshold_days": 7,
+        "require_local_newer_or_different": True
+    },
     "service": {
         "interval_seconds": 60
     }
@@ -119,6 +126,10 @@ def log(msg):
     setup_logging()
     print(msg)
     logging.info(msg)
+
+
+def utc_now_text():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def cert_dt_to_utc(dt):
@@ -249,7 +260,7 @@ def inspect_configured_pfx():
     result = inspect_pfx(cfg.get("pfx_path", ""), cfg.get("pfx_password", ""), cfg.get("expected_domain", ""))
     state = load_state()
     state["last_pfx_inspection"] = result
-    state["last_pfx_inspection_time"] = datetime.now(timezone.utc).isoformat()
+    state["last_pfx_inspection_time"] = utc_now_text()
     save_state(state)
     return result
 
@@ -311,7 +322,7 @@ def test_palo_api():
     result = {"connected": True, "hostname": hostname, "sw_version": sw_version}
     state = load_state()
     state["last_pa_test"] = result
-    state["last_pa_test_time"] = datetime.now(timezone.utc).isoformat()
+    state["last_pa_test_time"] = utc_now_text()
     save_state(state)
     log(f"Palo Alto API connected: hostname={hostname} sw_version={sw_version}")
     return result
@@ -369,26 +380,99 @@ def inspect_pa_certificate():
     }
     state = load_state()
     state["last_pa_certificate_inspection"] = result
-    state["last_pa_certificate_inspection_time"] = datetime.now(timezone.utc).isoformat()
+    state["last_pa_certificate_inspection_time"] = utc_now_text()
     save_state(state)
     log(f"Palo Alto certificate inspected: name={cert_name} days_left={days_left}")
+    return result
+
+
+def compare_certificates():
+    cfg = load_config()
+    local = inspect_configured_pfx()
+    try:
+        remote = inspect_pa_certificate()
+    except PaloCertificateNotFound as exc:
+        remote = {"found": False, "error": str(exc), "certificate_name": cfg.get("certificate_name", "")}
+
+    local_fp = normalize_fingerprint(local.get("fingerprint_sha256"))
+    remote_fp = normalize_fingerprint(remote.get("fingerprint_sha256"))
+    same_fingerprint = bool(local_fp and remote_fp and local_fp == remote_fp)
+
+    local_dt = parse_datetime_guess(local.get("not_after_utc"))
+    remote_dt = parse_datetime_guess(remote.get("not_after_utc"))
+    local_newer = bool(local_dt and remote_dt and local_dt > remote_dt)
+
+    result = {
+        "local": local,
+        "remote": remote,
+        "remote_found": bool(remote.get("found")),
+        "same_fingerprint": same_fingerprint,
+        "local_newer": local_newer,
+        "local_days_left": local.get("days_left"),
+        "remote_days_left": remote.get("days_left"),
+        "domain_match": bool(local.get("domain_match")),
+    }
+
+    state = load_state()
+    state["last_compare"] = result
+    state["last_compare_time"] = utc_now_text()
+    save_state(state)
+    log(f"Compare completed: remote_found={result['remote_found']} same={same_fingerprint} local_newer={local_newer} domain_match={result['domain_match']}")
+    return result
+
+
+def evaluate_policy(compare_result):
+    cfg = load_config()
+    policy = cfg.get("policy", {})
+    reasons = []
+
+    if policy.get("block_on_domain_mismatch", True) and not compare_result.get("domain_match", False):
+        return {"action": "block", "should_import": False, "reason": "Local PFX certificate does not match expected domain"}
+
+    if not compare_result.get("remote_found", False):
+        if policy.get("import_if_pa_cert_missing", True):
+            return {"action": "import", "should_import": True, "reason": "Palo Alto certificate is missing and first import is enabled"}
+        return {"action": "skip", "should_import": False, "reason": "Palo Alto certificate is missing and first import is disabled"}
+
+    if policy.get("require_local_newer_or_different", True):
+        if compare_result.get("same_fingerprint", False):
+            return {"action": "skip", "should_import": False, "reason": "Local and Palo Alto certificates have the same fingerprint"}
+        if not compare_result.get("local_newer", False):
+            reasons.append("local certificate is not newer")
+
+    if policy.get("auto_import_only_if_expiring", True):
+        threshold = int(policy.get("auto_import_expiry_threshold_days", 7))
+        remote_days_left = compare_result.get("remote_days_left")
+        if remote_days_left is None:
+            return {"action": "skip", "should_import": False, "reason": "Palo Alto certificate expiry could not be determined"}
+        if remote_days_left > threshold:
+            return {"action": "skip", "should_import": False, "reason": f"Palo Alto certificate has {remote_days_left} days left; threshold is {threshold}"}
+
+    if reasons:
+        return {"action": "skip", "should_import": False, "reason": "; ".join(reasons)}
+
+    return {"action": "import", "should_import": True, "reason": "Policy matched"}
+
+
+def policy_decision():
+    compare_result = compare_certificates()
+    decision = evaluate_policy(compare_result)
+    result = {"compare": compare_result, "decision": decision}
+    state = load_state()
+    state["last_policy_decision"] = result
+    state["last_policy_decision_time"] = utc_now_text()
+    save_state(state)
+    log(f"Policy decision: action={decision['action']} reason={decision['reason']}")
     return result
 
 
 def service_tick():
     log("Service tick executed")
     try:
-        result = inspect_configured_pfx()
-        log(f"Local PFX inspected: days_left={result.get('days_left')} domain_match={result.get('domain_match')}")
+        result = policy_decision()
+        log(f"Policy tick completed: action={result['decision']['action']}")
     except Exception as exc:
-        log(f"Local PFX inspection failed: {exc}")
-    try:
-        result = inspect_pa_certificate()
-        log(f"Palo Alto cert inspected: days_left={result.get('days_left')}")
-    except PaloCertificateNotFound as exc:
-        log(str(exc))
-    except Exception as exc:
-        log(f"Palo Alto cert inspection failed: {exc}")
+        log(f"Policy tick failed: {exc}")
 
 
 def service_loop():
@@ -419,6 +503,8 @@ def main():
     sub.add_parser("inspect-pfx")
     sub.add_parser("test-pa")
     sub.add_parser("inspect-pa-cert")
+    sub.add_parser("compare")
+    sub.add_parser("policy")
     args = parser.parse_args()
     try:
         if args.cmd == "service-loop":
@@ -431,6 +517,10 @@ def main():
             print_json(test_palo_api())
         elif args.cmd == "inspect-pa-cert":
             print_json(inspect_pa_certificate())
+        elif args.cmd == "compare":
+            print_json(compare_certificates())
+        elif args.cmd == "policy":
+            print_json(policy_decision())
     except CertGuardError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
