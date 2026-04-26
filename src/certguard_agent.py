@@ -4,10 +4,15 @@
 import argparse
 import json
 import logging
+import ssl
 import sys
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 try:
     from cryptography import x509
@@ -29,6 +34,8 @@ LOG_PATH = BASE_DIR / "logs" / "certguard-pa.log"
 
 DEFAULT_CONFIG = {
     "firewall_host": "",
+    "palo_api_key": "",
+    "skip_tls_validation": True,
     "certificate_name": "",
     "pfx_path": "",
     "pfx_password": "",
@@ -40,19 +47,27 @@ DEFAULT_CONFIG = {
 
 
 class CertGuardError(Exception):
-    """Base exception for CertGuard errors."""
+    pass
 
 
 class DependencyError(CertGuardError):
-    """Raised when a required Python package is missing."""
+    pass
 
 
 class PfxParseError(CertGuardError):
-    """Raised when the PFX cannot be parsed."""
+    pass
 
 
 class PfxPasswordError(PfxParseError):
-    """Raised when the PFX password is wrong or the file is unreadable."""
+    pass
+
+
+class PaloApiError(CertGuardError):
+    pass
+
+
+class PaloCertificateNotFound(PaloApiError):
+    pass
 
 
 def ensure_dirs():
@@ -61,20 +76,24 @@ def ensure_dirs():
 
 def setup_logging():
     ensure_dirs()
-    logging.basicConfig(
-        filename=str(LOG_PATH),
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(filename=str(LOG_PATH), level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def merge_config(base, override):
+    cfg = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(cfg.get(key), dict):
+            cfg[key] = merge_config(cfg[key], value)
+        else:
+            cfg[key] = value
+    return cfg
 
 
 def load_config():
     if not CONFIG_PATH.exists():
         return DEFAULT_CONFIG.copy()
     data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    cfg = DEFAULT_CONFIG.copy()
-    cfg.update(data)
-    return cfg
+    return merge_config(DEFAULT_CONFIG, data)
 
 
 def save_config(cfg):
@@ -110,8 +129,28 @@ def cert_dt_to_utc(dt):
     return dt.astimezone(timezone.utc)
 
 
+def parse_datetime_guess(text):
+    if not text:
+        return None
+    raw = str(text).strip().replace("  ", " ")
+    for fmt in ["%b %d %H:%M:%S %Y GMT", "%b %d %H:%M:%S %Y", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d", "%Y-%m-%d"]:
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    try:
+        dt = parsedate_to_datetime(raw)
+        return cert_dt_to_utc(dt)
+    except Exception:
+        return None
+
+
 def format_fingerprint(raw_bytes):
     return ":".join(f"{b:02X}" for b in raw_bytes)
+
+
+def normalize_fingerprint(value):
+    return (value or "").replace(":", "").replace(" ", "").upper()
 
 
 def get_first_name_attribute(cert, oid):
@@ -135,17 +174,13 @@ def get_san_dns_names(cert):
 def wildcard_match(pattern, hostname):
     pattern = (pattern or "").lower().strip()
     hostname = (hostname or "").lower().strip()
-
     if not pattern or not hostname:
         return False
-
     if pattern == hostname:
         return True
-
     if pattern.startswith("*."):
         suffix = pattern[1:]
         return hostname.endswith(suffix) and hostname.count(".") == pattern.count(".")
-
     return False
 
 
@@ -153,7 +188,6 @@ def domain_matches_certificate(expected_domain, common_name, san_dns_names):
     expected_domain = (expected_domain or "").lower().strip()
     if not expected_domain:
         return True
-
     candidates = san_dns_names or ([common_name] if common_name else [])
     return any(wildcard_match(candidate, expected_domain) for candidate in candidates)
 
@@ -165,44 +199,33 @@ def require_crypto():
 
 def inspect_pfx(pfx_path, password, expected_domain=""):
     require_crypto()
-
     pfx_file = Path(pfx_path)
     if not pfx_file.exists():
         raise FileNotFoundError(f"PFX file not found: {pfx_file}")
-
     try:
         pfx_bytes = pfx_file.read_bytes()
     except OSError as exc:
         raise PfxParseError(f"Unable to read PFX file: {exc}") from exc
-
     password_bytes = None if password is None else str(password).encode("utf-8")
-
     try:
         private_key, cert, additional_certs = pkcs12.load_key_and_certificates(pfx_bytes, password_bytes)
     except ValueError as exc:
         raise PfxPasswordError("Unable to parse PFX. The file may be corrupt or the password may be incorrect.") from exc
     except Exception as exc:
         raise PfxParseError(f"Unable to parse PFX: {exc}") from exc
-
     if cert is None:
         raise PfxParseError("PFX does not contain a leaf certificate")
-
     try:
         not_before = cert_dt_to_utc(cert.not_valid_before_utc)
         not_after = cert_dt_to_utc(cert.not_valid_after_utc)
     except AttributeError:
         not_before = cert_dt_to_utc(cert.not_valid_before)
         not_after = cert_dt_to_utc(cert.not_valid_after)
-
     now = datetime.now(timezone.utc)
-    days_left = None
-    if not_after is not None:
-        days_left = int((not_after - now).total_seconds() // 86400)
-
+    days_left = int((not_after - now).total_seconds() // 86400) if not_after else None
     common_name = get_first_name_attribute(cert, NameOID.COMMON_NAME)
     san_dns_names = get_san_dns_names(cert)
     domain_match = domain_matches_certificate(expected_domain, common_name, san_dns_names)
-
     return {
         "pfx_path": str(pfx_file),
         "has_private_key": private_key is not None,
@@ -223,17 +246,132 @@ def inspect_pfx(pfx_path, password, expected_domain=""):
 
 def inspect_configured_pfx():
     cfg = load_config()
-    result = inspect_pfx(
-        cfg.get("pfx_path", ""),
-        cfg.get("pfx_password", ""),
-        cfg.get("expected_domain", ""),
-    )
-
+    result = inspect_pfx(cfg.get("pfx_path", ""), cfg.get("pfx_password", ""), cfg.get("expected_domain", ""))
     state = load_state()
     state["last_pfx_inspection"] = result
     state["last_pfx_inspection_time"] = datetime.now(timezone.utc).isoformat()
     save_state(state)
+    return result
 
+
+def ssl_context(skip_tls_validation):
+    if skip_tls_validation:
+        return ssl._create_unverified_context()
+    return ssl.create_default_context()
+
+
+def palo_request(config, params, timeout=180):
+    host = (config.get("firewall_host") or "").strip()
+    key = (config.get("palo_api_key") or "").strip()
+    if not host:
+        raise PaloApiError("firewall_host is required")
+    if not key:
+        raise PaloApiError("palo_api_key is required")
+    query = dict(params)
+    query["key"] = key
+    url = f"https://{host}/api/?{urllib.parse.urlencode(query)}"
+    try:
+        with urllib.request.urlopen(url, context=ssl_context(bool(config.get("skip_tls_validation", True))), timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise PaloApiError(f"Palo Alto API request failed: {exc}") from exc
+
+
+def parse_palo_response(xml_text):
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise PaloApiError(f"Invalid XML response from Palo Alto: {exc}") from exc
+    status = root.attrib.get("status", "")
+    if status != "success":
+        msg = ""
+        msg_node = root.find(".//msg")
+        if msg_node is not None and msg_node.text:
+            msg = msg_node.text.strip()
+        raise PaloApiError(f"Palo Alto API returned status={status} {msg}".strip())
+    return root
+
+
+def palo_op(config, cmd_xml):
+    xml_text = palo_request(config, {"type": "op", "cmd": cmd_xml})
+    return parse_palo_response(xml_text), xml_text
+
+
+def test_palo_api():
+    cfg = load_config()
+    root, _ = palo_op(cfg, "<show><system><info></info></system></show>")
+    hostname = ""
+    sw_version = ""
+    host_node = root.find(".//hostname")
+    version_node = root.find(".//sw-version")
+    if host_node is not None and host_node.text:
+        hostname = host_node.text.strip()
+    if version_node is not None and version_node.text:
+        sw_version = version_node.text.strip()
+    result = {"connected": True, "hostname": hostname, "sw_version": sw_version}
+    state = load_state()
+    state["last_pa_test"] = result
+    state["last_pa_test_time"] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
+    log(f"Palo Alto API connected: hostname={hostname} sw_version={sw_version}")
+    return result
+
+
+def find_pa_cert_block(xml_text, certificate_name):
+    if not certificate_name:
+        raise PaloApiError("certificate_name is required")
+    idx = xml_text.find(certificate_name)
+    if idx < 0:
+        return ""
+    return xml_text[max(0, idx - 1200): idx + 5000]
+
+
+def extract_first(patterns, text):
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def inspect_pa_certificate():
+    cfg = load_config()
+    cert_name = cfg.get("certificate_name", "")
+    _, xml_text = palo_op(cfg, "<show><sslmgr-store><config-certificate-info></config-certificate-info></sslmgr-store></show>")
+    block = find_pa_cert_block(xml_text, cert_name)
+    if not block:
+        raise PaloCertificateNotFound(f"Certificate not found on Palo Alto: {cert_name}")
+    expiry_raw = extract_first([
+        re.compile(r"(?:not-after|not_after|expiry|expires|expire|valid-to|valid_to)[^A-Za-z0-9]{0,30}([^<\r\n]+)", re.IGNORECASE),
+        re.compile(r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+GMT)"),
+        re.compile(r"(\d{4}[/-]\d{2}[/-]\d{2}(?:\s+\d{2}:\d{2}:\d{2})?)"),
+    ], block)
+    expiry_dt = parse_datetime_guess(expiry_raw)
+    days_left = int((expiry_dt - datetime.now(timezone.utc)).total_seconds() // 86400) if expiry_dt else None
+    fingerprint = extract_first([
+        re.compile(r"(?:sha256|sha-256|fingerprint)[^A-Fa-f0-9]*([A-Fa-f0-9:]{40,})", re.IGNORECASE),
+    ], block)
+    serial = extract_first([
+        re.compile(r"(?:serial|serial-number)[^A-Fa-f0-9]*([A-Fa-f0-9:]+)", re.IGNORECASE),
+    ], block)
+    subject = extract_first([
+        re.compile(r"(?:subject|subject-name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE),
+    ], block)
+    result = {
+        "certificate_name": cert_name,
+        "found": True,
+        "not_after_raw": expiry_raw,
+        "not_after_utc": expiry_dt.isoformat() if expiry_dt else "",
+        "days_left": days_left,
+        "fingerprint_sha256": fingerprint,
+        "serial_number_hex": serial,
+        "subject": subject,
+    }
+    state = load_state()
+    state["last_pa_certificate_inspection"] = result
+    state["last_pa_certificate_inspection_time"] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
+    log(f"Palo Alto certificate inspected: name={cert_name} days_left={days_left}")
     return result
 
 
@@ -244,6 +382,13 @@ def service_tick():
         log(f"Local PFX inspected: days_left={result.get('days_left')} domain_match={result.get('domain_match')}")
     except Exception as exc:
         log(f"Local PFX inspection failed: {exc}")
+    try:
+        result = inspect_pa_certificate()
+        log(f"Palo Alto cert inspected: days_left={result.get('days_left')}")
+    except PaloCertificateNotFound as exc:
+        log(str(exc))
+    except Exception as exc:
+        log(f"Palo Alto cert inspection failed: {exc}")
 
 
 def service_loop():
@@ -269,13 +414,12 @@ def run_debug():
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
-
     sub.add_parser("service-loop")
     sub.add_parser("debug")
     sub.add_parser("inspect-pfx")
-
+    sub.add_parser("test-pa")
+    sub.add_parser("inspect-pa-cert")
     args = parser.parse_args()
-
     try:
         if args.cmd == "service-loop":
             service_loop()
@@ -283,6 +427,10 @@ def main():
             run_debug()
         elif args.cmd == "inspect-pfx":
             print_json(inspect_configured_pfx())
+        elif args.cmd == "test-pa":
+            print_json(test_palo_api())
+        elif args.cmd == "inspect-pa-cert":
+            print_json(inspect_pa_certificate())
     except CertGuardError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -292,7 +440,6 @@ def main():
     except Exception as exc:
         print(f"ERROR: unexpected failure: {exc}", file=sys.stderr)
         return 1
-
     return 0
 
 
