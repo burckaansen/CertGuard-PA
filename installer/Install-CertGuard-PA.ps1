@@ -37,11 +37,13 @@ function Get-PythonPrefix {
     return @("-3")
 }
 
-function Invoke-Native {
-    param([string]$FilePath, [string[]]$Arguments)
-    $p = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -NoNewWindow -PassThru
-    if ($p.ExitCode -ne 0) {
-        throw "Command failed with exit code $($p.ExitCode): $FilePath $($Arguments -join ' ')"
+function Invoke-PythonChecked {
+    param([string[]]$Arguments)
+    $py = Get-PythonCommand
+    $prefix = Get-PythonPrefix
+    & $py @prefix @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python command failed with exit code $LASTEXITCODE: $($Arguments -join ' ')"
     }
 }
 
@@ -49,8 +51,8 @@ function Test-PythonImport {
     param([string]$ModuleName)
     $py = Get-PythonCommand
     $prefix = Get-PythonPrefix
-    $p = Start-Process -FilePath $py -ArgumentList ($prefix + @("-c", "import $ModuleName")) -Wait -NoNewWindow -PassThru
-    return ($p.ExitCode -eq 0)
+    & $py @prefix -c "import $ModuleName" *> $null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Ensure-Package {
@@ -60,9 +62,7 @@ function Ensure-Package {
         return
     }
     Write-Host "[INFO] Python package missing: $PackageName. Installing..."
-    $py = Get-PythonCommand
-    $prefix = Get-PythonPrefix
-    Invoke-Native $py ($prefix + @("-m", "pip", "install", "--upgrade", $PackageName))
+    Invoke-PythonChecked @("-m", "pip", "install", "--upgrade", $PackageName)
 }
 
 function Ensure-Dependencies {
@@ -83,21 +83,15 @@ function Ensure-EventSource {
 function Deploy-Files {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
-    if (-not (Test-Path $SrcDir)) {
-        throw "Source directory was not found: $SrcDir"
-    }
-
+    if (-not (Test-Path $SrcDir)) { throw "Source directory was not found: $SrcDir" }
     Copy-Item (Join-Path $SrcDir "*.py") $InstallDir -Force
-    Copy-Item $PSCommandPath $RuntimeInstaller -Force
-
+    $sourcePath = [System.IO.Path]::GetFullPath($PSCommandPath)
+    $targetPath = [System.IO.Path]::GetFullPath($RuntimeInstaller)
+    if ($sourcePath -ne $targetPath) { Copy-Item $PSCommandPath $RuntimeInstaller -Force }
     try {
         icacls $InstallDir /inheritance:e | Out-Null
         icacls $InstallDir /grant:r "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
-    } catch {
-        Write-Warning "ACL update failed: $($_.Exception.Message)"
-    }
-
+    } catch { Write-Warning "ACL update failed: $($_.Exception.Message)" }
     Write-Host "[INFO] Files deployed to $InstallDir"
 }
 
@@ -105,21 +99,17 @@ function Invoke-Agent {
     param([string]$Command)
     Deploy-Files
     Ensure-Dependencies
-    $py = Get-PythonCommand
-    $prefix = Get-PythonPrefix
-    Invoke-Native $py ($prefix + @($Agent, $Command))
+    Invoke-PythonChecked @($Agent, $Command)
 }
 
 function Install-Service {
     Deploy-Files
     Ensure-Dependencies
     Ensure-EventSource
-
     $py = Get-PythonCommand
     $prefix = Get-PythonPrefix
     $pythonArgs = ($prefix + @($Agent, "service-loop")) -join " "
     $binPath = "`"$py`" $pythonArgs"
-
     sc.exe query $ServiceName *> $null
     if ($LASTEXITCODE -eq 0) {
         sc.exe stop $ServiceName *> $null
@@ -127,14 +117,11 @@ function Install-Service {
         sc.exe delete $ServiceName *> $null
         Start-Sleep -Seconds 2
     }
-
     sc.exe create $ServiceName binPath= $binPath start= auto DisplayName= $DisplayName | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "sc.exe create failed." }
-
     sc.exe description $ServiceName "CertGuard-PA automated Palo Alto certificate lifecycle monitor." | Out-Null
     sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/120000/restart/300000 | Out-Null
     sc.exe failureflag $ServiceName 1 | Out-Null
-
     sc.exe start $ServiceName | Out-Null
     Write-Host "[INFO] Service installed and started: $ServiceName"
 }
@@ -147,19 +134,12 @@ function Remove-ServiceIfExists {
         sc.exe delete $ServiceName *> $null
         Start-Sleep -Seconds 2
         Write-Host "[INFO] Service removed: $ServiceName"
-    } else {
-        Write-Host "[INFO] Service does not exist: $ServiceName"
-    }
+    } else { Write-Host "[INFO] Service does not exist: $ServiceName" }
 }
 
 function Uninstall-App {
     Remove-ServiceIfExists
-
-    if (-not (Test-Path $InstallDir)) {
-        Write-Host "[INFO] ProgramData directory does not exist."
-        return
-    }
-
+    if (-not (Test-Path $InstallDir)) { Write-Host "[INFO] ProgramData directory does not exist."; return }
     Write-Host ""
     Write-Host "ProgramData cleanup options:"
     Write-Host "  1 - Remove everything: config, state, logs and runtime files"
@@ -167,65 +147,31 @@ function Uninstall-App {
     Write-Host "  3 - Remove logs only"
     Write-Host "  4 - Keep everything"
     $choice = Read-Host "Select cleanup option (1/2/3/4)"
-
     switch ($choice) {
-        "1" {
-            Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "[INFO] Removed all ProgramData: $InstallDir"
-        }
-        "2" {
-            Get-ChildItem $InstallDir -File -Filter "*.py" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-            Write-Host "[INFO] Runtime files removed; config/state/logs preserved."
-        }
-        "3" {
-            Remove-Item $LogDir -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "[INFO] Logs removed."
-        }
-        default {
-            Write-Host "[INFO] ProgramData preserved."
-        }
+        "1" { Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue; Write-Host "[INFO] Removed all ProgramData: $InstallDir" }
+        "2" { Get-ChildItem $InstallDir -File -Filter "*.py" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; Write-Host "[INFO] Runtime files removed; config/state/logs preserved." }
+        "3" { Remove-Item $LogDir -Recurse -Force -ErrorAction SilentlyContinue; Write-Host "[INFO] Logs removed." }
+        default { Write-Host "[INFO] ProgramData preserved." }
     }
 }
 
 function Show-Status {
     sc.exe query $ServiceName
     $statePath = Join-Path $InstallDir "state.json"
-    if (Test-Path $statePath) {
-        Write-Host ""
-        Write-Host "[STATE]"
-        Get-Content $statePath
-    }
+    if (Test-Path $statePath) { Write-Host ""; Write-Host "[STATE]"; Get-Content $statePath }
 }
 
 Assert-Admin
-
 switch ($Action) {
-    "Install" {
-        Deploy-Files
-        Ensure-Dependencies
-        Ensure-EventSource
-        $py = Get-PythonCommand
-        $prefix = Get-PythonPrefix
-        Invoke-Native $py ($prefix + @($Gui))
-    }
+    "Install" { Deploy-Files; Ensure-Dependencies; Ensure-EventSource; Invoke-PythonChecked @($Gui) }
     "InstallSilent" { Install-Service }
     "Repair" { Install-Service }
     "Uninstall" { Uninstall-App }
     "Start" { sc.exe start $ServiceName }
     "Stop" { sc.exe stop $ServiceName }
-    "Restart" {
-        sc.exe stop $ServiceName
-        Start-Sleep -Seconds 2
-        sc.exe start $ServiceName
-    }
+    "Restart" { sc.exe stop $ServiceName; Start-Sleep -Seconds 2; sc.exe start $ServiceName }
     "Status" { Show-Status }
-    "Gui" {
-        Deploy-Files
-        Ensure-Dependencies
-        $py = Get-PythonCommand
-        $prefix = Get-PythonPrefix
-        Invoke-Native $py ($prefix + @($Gui))
-    }
+    "Gui" { Deploy-Files; Ensure-Dependencies; Invoke-PythonChecked @($Gui) }
     "Debug" { Invoke-Agent "debug" }
     "Deploy" { Invoke-Agent "deploy" }
     "ForceDeploy" { Invoke-Agent "force-deploy" }
