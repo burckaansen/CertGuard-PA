@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import ssl
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -62,38 +63,38 @@ DEFAULT_CONFIG = {
         "block_on_domain_mismatch": True,
         "auto_import_only_if_expiring": True,
         "auto_import_expiry_threshold_days": 7,
-        "require_local_newer_or_different": True
+        "require_local_newer_or_different": True,
+        "use_win_acme_fallback": True
     },
     "deploy": {
         "retry_count": 3,
         "retry_delay_seconds": 5,
         "verify_after_import": True
     },
+    "win_acme": {
+        "path": "",
+        "base_uri": "https://acme-v02.api.letsencrypt.org/",
+        "renew_timeout_seconds": 900
+    },
     "service": {
         "interval_seconds": 3600
     }
 }
 
-
 class CertGuardError(Exception):
     pass
-
 
 class DependencyError(CertGuardError):
     pass
 
-
 class PfxParseError(CertGuardError):
     pass
-
 
 class PfxPasswordError(PfxParseError):
     pass
 
-
 class PaloApiError(CertGuardError):
     pass
-
 
 class PaloCertificateNotFound(PaloApiError):
     pass
@@ -139,11 +140,6 @@ def load_config():
     return deep_merge(DEFAULT_CONFIG, json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
 
 
-def save_state(state):
-    ensure_dirs()
-    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
 def load_state():
     if not STATE_PATH.exists():
         return {}
@@ -151,6 +147,11 @@ def load_state():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def save_state(state):
+    ensure_dirs()
+    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def utc_now_text():
@@ -452,6 +453,49 @@ def compare_certificates():
     return result
 
 
+def run_win_acme_renew():
+    config = load_config()
+    win_acme = config.get("win_acme", {})
+    wacs_path = win_acme.get("path", "")
+    base_uri = win_acme.get("base_uri", "https://acme-v02.api.letsencrypt.org/")
+    timeout = int(win_acme.get("renew_timeout_seconds", 900))
+    if not wacs_path:
+        raise CertGuardError("win-acme path is not configured")
+    if not Path(wacs_path).exists():
+        raise FileNotFoundError(f"wacs.exe not found: {wacs_path}")
+    log("win-acme fallback renewal started", "WARN", 380)
+    proc = subprocess.run([wacs_path, "--renew", "--baseuri", base_uri], text=True, capture_output=True, timeout=timeout)
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-6000:]
+    state = load_state()
+    state["last_wacs_renew_time"] = utc_now_text()
+    state["last_wacs_renew_returncode"] = proc.returncode
+    state["last_wacs_renew_output"] = output
+    save_state(state)
+    if proc.returncode != 0:
+        log(f"win-acme fallback renewal failed: {output[-900:]}", "ERROR", 381)
+        raise CertGuardError(f"win-acme renew failed with code {proc.returncode}")
+    log("win-acme fallback renewal completed successfully", "INFO", 382)
+    return {"renewed": True, "returncode": proc.returncode}
+
+
+def test_win_acme():
+    config = load_config()
+    wacs_path = config.get("win_acme", {}).get("path", "")
+    if not wacs_path:
+        raise CertGuardError("win-acme path is not configured")
+    if not Path(wacs_path).exists():
+        raise FileNotFoundError(f"wacs.exe not found: {wacs_path}")
+    proc = subprocess.run([wacs_path, "--verbose"], text=True, capture_output=True, timeout=90)
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
+    result = {"exists": True, "returncode": proc.returncode, "output_tail": output}
+    state = load_state()
+    state["last_wacs_test"] = result
+    state["last_wacs_test_time"] = utc_now_text()
+    save_state(state)
+    log(f"win-acme test completed returncode={proc.returncode}", "INFO", 383)
+    return result
+
+
 def evaluate_policy(compare_result):
     policy = load_config().get("policy", {})
     reasons = []
@@ -524,13 +568,20 @@ def deploy_certificate(force=False):
     verify_after_import = bool(deploy_config.get("verify_after_import", True))
     decision_result = policy_decision()
     decision = decision_result.get("decision", {})
+
     if not force and not decision.get("should_import", False):
-        result = {"deployed": False, "skipped": True, "reason": decision.get("reason", "policy skipped")}
-        state["last_deploy"] = result
-        state["last_deploy_time"] = utc_now_text()
-        save_state(state)
-        log(f"Deploy skipped: {result['reason']}", "INFO", 351)
-        return result
+        if config.get("policy", {}).get("use_win_acme_fallback", True) and "not newer" in decision.get("reason", ""):
+            run_win_acme_renew()
+            decision_result = policy_decision()
+            decision = decision_result.get("decision", {})
+        if not decision.get("should_import", False):
+            result = {"deployed": False, "skipped": True, "reason": decision.get("reason", "policy skipped")}
+            state["last_deploy"] = result
+            state["last_deploy_time"] = utc_now_text()
+            save_state(state)
+            log(f"Deploy skipped: {result['reason']}", "INFO", 351)
+            return result
+
     last_error = ""
     for attempt in range(1, retry_count + 1):
         try:
@@ -563,9 +614,34 @@ def deploy_certificate(force=False):
     raise CertGuardError(f"Deployment failed after {retry_count} attempts: {last_error}")
 
 
+def health_check():
+    issues = []
+    config = load_config()
+    if not config.get("firewall_host"):
+        issues.append("firewall_host missing")
+    if not get_palo_api_key(config):
+        issues.append("palo_api_key missing")
+    if not config.get("certificate_name"):
+        issues.append("certificate_name missing")
+    if not config.get("pfx_path") or not Path(config.get("pfx_path", "")).exists():
+        issues.append("pfx_path missing or not found")
+    if not get_pfx_password(config):
+        issues.append("pfx_password missing")
+    result = {"ok": not issues, "issues": issues, "time": utc_now_text()}
+    state = load_state()
+    state["last_health_check"] = result
+    save_state(state)
+    if issues:
+        log("Health check failed: " + "; ".join(issues), "ERROR", 305)
+    else:
+        log("Health check completed successfully", "INFO", 306)
+    return result
+
+
 def service_tick():
     log("Service tick executed", "INFO", 301)
     try:
+        health_check()
         result = policy_decision()
         action = result["decision"]["action"]
         log(f"Policy tick completed: action={action}", "INFO", 302)
@@ -598,7 +674,7 @@ def print_json(data):
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for command in ["service-loop", "debug", "inspect-pfx", "test-pa", "inspect-pa-cert", "compare", "policy", "deploy", "force-deploy"]:
+    for command in ["service-loop", "debug", "health", "inspect-pfx", "test-pa", "inspect-pa-cert", "compare", "policy", "deploy", "force-deploy", "test-wacs", "renew-wacs"]:
         sub.add_parser(command)
     args = parser.parse_args()
     try:
@@ -606,6 +682,8 @@ def main():
             service_loop()
         elif args.cmd == "debug":
             run_debug()
+        elif args.cmd == "health":
+            print_json(health_check())
         elif args.cmd == "inspect-pfx":
             print_json(inspect_configured_pfx())
         elif args.cmd == "test-pa":
@@ -620,6 +698,10 @@ def main():
             print_json(deploy_certificate(force=False))
         elif args.cmd == "force-deploy":
             print_json(deploy_certificate(force=True))
+        elif args.cmd == "test-wacs":
+            print_json(test_win_acme())
+        elif args.cmd == "renew-wacs":
+            print_json(run_win_acme_renew())
     except CertGuardError as exc:
         log(f"Command failed: {exc}", "ERROR", 399)
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -633,7 +715,6 @@ def main():
         print(f"ERROR: unexpected failure: {exc}", file=sys.stderr)
         return 1
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
