@@ -12,6 +12,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+import warnings
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -245,10 +246,16 @@ def inspect_pfx(pfx_path, password, expected_domain=""):
     if not pfx_file.exists():
         raise FileNotFoundError(f"PFX file not found: {pfx_file}")
     try:
-        private_key, cert, additional_certs = pkcs12.load_key_and_certificates(
-            pfx_file.read_bytes(),
-            None if password is None else str(password).encode("utf-8"),
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="PKCS#12 bundle could not be parsed as DER.*",
+                category=UserWarning,
+            )
+            private_key, cert, additional_certs = pkcs12.load_key_and_certificates(
+                pfx_file.read_bytes(),
+                None if password is None else str(password).encode("utf-8"),
+            )
     except ValueError as exc:
         raise PfxPasswordError("Unable to parse PFX. The file may be corrupt or the password may be incorrect.") from exc
     except Exception as exc:
