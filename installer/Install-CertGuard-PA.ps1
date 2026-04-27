@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","Repair")]
+    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","TestWacs","RenewWacs","Health","Repair")]
     [string]$Action = "Install"
 )
 
@@ -12,6 +12,7 @@ $LogDir = Join-Path $InstallDir "logs"
 $SrcDir = Join-Path (Split-Path -Parent $PSScriptRoot) "src"
 $Agent = Join-Path $InstallDir "certguard_agent.py"
 $Gui = Join-Path $InstallDir "certguard_gui.py"
+$RuntimeInstaller = Join-Path $InstallDir "Install-CertGuard-PA.ps1"
 $EventSource = "CertGuard-PA"
 
 function Assert-Admin {
@@ -88,6 +89,7 @@ function Deploy-Files {
     }
 
     Copy-Item (Join-Path $SrcDir "*.py") $InstallDir -Force
+    Copy-Item $PSCommandPath $RuntimeInstaller -Force
 
     try {
         icacls $InstallDir /inheritance:e | Out-Null
@@ -135,14 +137,6 @@ function Install-Service {
 
     sc.exe start $ServiceName | Out-Null
     Write-Host "[INFO] Service installed and started: $ServiceName"
-}
-
-function Stop-ServiceIfExists {
-    sc.exe query $ServiceName *> $null
-    if ($LASTEXITCODE -eq 0) {
-        sc.exe stop $ServiceName *> $null
-        Start-Sleep -Seconds 2
-    }
 }
 
 function Remove-ServiceIfExists {
@@ -239,4 +233,7 @@ switch ($Action) {
     "Compare" { Invoke-Agent "compare" }
     "InspectPfx" { Invoke-Agent "inspect-pfx" }
     "TestApi" { Invoke-Agent "test-pa" }
+    "TestWacs" { Invoke-Agent "test-wacs" }
+    "RenewWacs" { Invoke-Agent "renew-wacs" }
+    "Health" { Invoke-Agent "health" }
 }
