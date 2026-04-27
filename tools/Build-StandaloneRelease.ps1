@@ -93,7 +93,7 @@ function Invoke-PythonChecked {
     $prefix = Get-PythonPrefix
     & $py @prefix @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Python command failed with exit code $LASTEXITCODE: $($Arguments -join ' ')"
+        throw "Python command failed with exit code ${LASTEXITCODE}: $($Arguments -join ' ')"
     }
 }
 
