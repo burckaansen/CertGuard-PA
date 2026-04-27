@@ -13,6 +13,7 @@ $OutputPath = Join-Path $ReleaseDir "Install-CertGuard-PA-Standalone.ps1"
 $Files = @(
     "certguard_agent.py",
     "certguard_gui.py",
+    "certguard_gui_qt.py",
     "certguard_eventlog.py",
     "certguard_secrets.py"
 )
@@ -40,7 +41,7 @@ $Template = @'
 # ASCII only
 
 param(
-    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","TestWacs","RenewWacs","Health","Repair")]
+    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","GuiLegacy","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","TestWacs","RenewWacs","Health","Repair")]
     [string]$Action = "Install"
 )
 
@@ -51,13 +52,15 @@ $DisplayName = "CertGuard-PA Certificate Monitor"
 $InstallDir = "C:\ProgramData\CertGuard-PA"
 $LogDir = Join-Path $InstallDir "logs"
 $Agent = Join-Path $InstallDir "certguard_agent.py"
-$Gui = Join-Path $InstallDir "certguard_gui.py"
+$Gui = Join-Path $InstallDir "certguard_gui_qt.py"
+$GuiLegacy = Join-Path $InstallDir "certguard_gui.py"
 $RuntimeInstaller = Join-Path $InstallDir "Install-CertGuard-PA.ps1"
 $EventSource = "CertGuard-PA"
 
 $EmbeddedFiles = @{
     "certguard_agent.py" = "__AGENT_B64__"
-    "certguard_gui.py" = "__GUI_B64__"
+    "certguard_gui.py" = "__GUI_LEGACY_B64__"
+    "certguard_gui_qt.py" = "__GUI_QT_B64__"
     "certguard_eventlog.py" = "__EVENTLOG_B64__"
     "certguard_secrets.py" = "__SECRETS_B64__"
 }
@@ -84,11 +87,13 @@ function Get-PythonPrefix {
     return @("-3")
 }
 
-function Invoke-Native {
-    param([string]$FilePath, [string[]]$Arguments)
-    $p = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -NoNewWindow -PassThru
-    if ($p.ExitCode -ne 0) {
-        throw "Command failed with exit code $($p.ExitCode): $FilePath $($Arguments -join ' ')"
+function Invoke-PythonChecked {
+    param([string[]]$Arguments)
+    $py = Get-PythonCommand
+    $prefix = Get-PythonPrefix
+    & $py @prefix @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python command failed with exit code $LASTEXITCODE: $($Arguments -join ' ')"
     }
 }
 
@@ -96,8 +101,8 @@ function Test-PythonImport {
     param([string]$ModuleName)
     $py = Get-PythonCommand
     $prefix = Get-PythonPrefix
-    $p = Start-Process -FilePath $py -ArgumentList ($prefix + @("-c", "import $ModuleName")) -Wait -NoNewWindow -PassThru
-    return ($p.ExitCode -eq 0)
+    & $py @prefix -c "import $ModuleName" *> $null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Ensure-Package {
@@ -107,13 +112,16 @@ function Ensure-Package {
         return
     }
     Write-Host "[INFO] Python package missing: $PackageName. Installing..."
-    $py = Get-PythonCommand
-    $prefix = Get-PythonPrefix
-    Invoke-Native $py ($prefix + @("-m", "pip", "install", "--upgrade", $PackageName))
+    Invoke-PythonChecked @("-m", "pip", "install", "--upgrade", $PackageName)
 }
 
 function Ensure-Dependencies {
     Ensure-Package "cryptography" "cryptography"
+}
+
+function Ensure-GuiDependencies {
+    Ensure-Dependencies
+    Ensure-Package "PySide6" "PySide6"
 }
 
 function Ensure-EventSource {
@@ -166,9 +174,7 @@ function Invoke-Agent {
     param([string]$Command)
     Deploy-Files
     Ensure-Dependencies
-    $py = Get-PythonCommand
-    $prefix = Get-PythonPrefix
-    Invoke-Native $py ($prefix + @($Agent, $Command))
+    Invoke-PythonChecked @($Agent, $Command)
 }
 
 function Install-Service {
@@ -262,11 +268,9 @@ Assert-Admin
 switch ($Action) {
     "Install" {
         Deploy-Files
-        Ensure-Dependencies
+        Ensure-GuiDependencies
         Ensure-EventSource
-        $py = Get-PythonCommand
-        $prefix = Get-PythonPrefix
-        Invoke-Native $py ($prefix + @($Gui))
+        Invoke-PythonChecked @($Gui)
     }
     "InstallSilent" { Install-Service }
     "Repair" { Install-Service }
@@ -281,10 +285,13 @@ switch ($Action) {
     "Status" { Show-Status }
     "Gui" {
         Deploy-Files
+        Ensure-GuiDependencies
+        Invoke-PythonChecked @($Gui)
+    }
+    "GuiLegacy" {
+        Deploy-Files
         Ensure-Dependencies
-        $py = Get-PythonCommand
-        $prefix = Get-PythonPrefix
-        Invoke-Native $py ($prefix + @($Gui))
+        Invoke-PythonChecked @($GuiLegacy)
     }
     "Debug" { Invoke-Agent "debug" }
     "Deploy" { Invoke-Agent "deploy" }
@@ -301,7 +308,8 @@ switch ($Action) {
 
 $Standalone = $Template
 $Standalone = $Standalone.Replace("__AGENT_B64__", $Embedded["certguard_agent.py"])
-$Standalone = $Standalone.Replace("__GUI_B64__", $Embedded["certguard_gui.py"])
+$Standalone = $Standalone.Replace("__GUI_LEGACY_B64__", $Embedded["certguard_gui.py"])
+$Standalone = $Standalone.Replace("__GUI_QT_B64__", $Embedded["certguard_gui_qt.py"])
 $Standalone = $Standalone.Replace("__EVENTLOG_B64__", $Embedded["certguard_eventlog.py"])
 $Standalone = $Standalone.Replace("__SECRETS_B64__", $Embedded["certguard_secrets.py"])
 
