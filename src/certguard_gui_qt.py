@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
         "auto_import_expiry_threshold_days": 7,
         "require_local_newer_or_different": True,
         "use_win_acme_fallback": True,
+        "block_private_key_export_on_import": True,
     },
     "deploy": {
         "retry_count": 3,
@@ -424,6 +425,7 @@ class MainWindow(QMainWindow):
         self.checks["auto_import_only_if_expiring"] = p.add_check("Import only if Palo Alto certificate is expiring", policy.get("auto_import_only_if_expiring", True))
         self.checks["require_local_newer_or_different"] = p.add_check("Require local certificate to be newer or different", policy.get("require_local_newer_or_different", True))
         self.checks["use_win_acme_fallback"] = p.add_check("Use win-acme fallback if local certificate is not newer", policy.get("use_win_acme_fallback", True))
+        self.checks["block_private_key_export_on_import"] = p.add_check("Block Private Key Export on Palo Alto import", policy.get("block_private_key_export_on_import", True))
         self.fields["auto_import_expiry_threshold_days"] = p.add_line("Expiry Threshold Days", policy.get("auto_import_expiry_threshold_days", 7))
         self.stack.addWidget(p)
 
@@ -516,6 +518,7 @@ class MainWindow(QMainWindow):
                 "auto_import_expiry_threshold_days": int(self.fields["auto_import_expiry_threshold_days"].text()),
                 "require_local_newer_or_different": self.checks["require_local_newer_or_different"].isChecked(),
                 "use_win_acme_fallback": self.checks["use_win_acme_fallback"].isChecked(),
+                "block_private_key_export_on_import": self.checks["block_private_key_export_on_import"].isChecked(),
             },
             "deploy": {
                 "retry_count": int(self.fields["retry_count"].text()),
