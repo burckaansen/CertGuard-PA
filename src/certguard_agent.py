@@ -65,7 +65,8 @@ DEFAULT_CONFIG = {
         "auto_import_only_if_expiring": True,
         "auto_import_expiry_threshold_days": 7,
         "require_local_newer_or_different": True,
-        "use_win_acme_fallback": True
+        "use_win_acme_fallback": True,
+        "block_private_key_export_on_import": True
     },
     "deploy": {
         "retry_count": 3,
@@ -544,12 +545,26 @@ def policy_decision():
 
 def import_certificate_once():
     config = load_config()
+    policy = config.get("policy", {})
+    block_private_key_export = bool(policy.get("block_private_key_export_on_import", True))
     local = inspect_configured_pfx()
-    params = {"type": "import", "category": "keypair", "certificate-name": config.get("certificate_name", ""), "format": "pkcs12", "passphrase": get_pfx_password(config)}
+    params = {
+        "type": "import",
+        "category": "keypair",
+        "certificate-name": config.get("certificate_name", ""),
+        "format": "pkcs12",
+        "passphrase": get_pfx_password(config),
+    }
+    if block_private_key_export:
+        params["block-private-key"] = "yes"
     xml_text = palo_multipart_import(config, params, Path(config.get("pfx_path", "")))
     parse_palo_response(xml_text)
-    log(f"Certificate import completed: {config.get('certificate_name')}", "INFO", 360)
-    return {"imported": True, "local_fingerprint_sha256": local.get("fingerprint_sha256")}
+    log(f"Certificate import completed: {config.get('certificate_name')} block_private_key_export={block_private_key_export}", "INFO", 360)
+    return {
+        "imported": True,
+        "local_fingerprint_sha256": local.get("fingerprint_sha256"),
+        "block_private_key_export": block_private_key_export,
+    }
 
 
 def verify_import(expected_fingerprint):
