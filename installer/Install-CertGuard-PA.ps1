@@ -52,8 +52,17 @@ function Test-PythonImport {
     param([string]$ModuleName)
     $py = Get-PythonCommand
     $prefix = Get-PythonPrefix
-    & $py @prefix -c "import $ModuleName" *> $null
-    return ($LASTEXITCODE -eq 0)
+    $oldEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $py @prefix -c "import $ModuleName" 1>$null 2>$null
+        $exitCode = $LASTEXITCODE
+        return ($exitCode -eq 0)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $oldEap
+    }
 }
 
 function Ensure-Package {
@@ -62,8 +71,11 @@ function Ensure-Package {
         Write-Host "[INFO] Python package already available: $PackageName"
         return
     }
-    Write-Host "[INFO] Python package missing: $PackageName. Installing..."
-    Invoke-PythonChecked @("-m", "pip", "install", "--upgrade", $PackageName)
+    Write-Host "[INFO] Python package missing or broken: $PackageName. Installing/upgrading..."
+    Invoke-PythonChecked @("-m", "pip", "install", "--upgrade", "--force-reinstall", $PackageName)
+    if (-not (Test-PythonImport $ModuleName)) {
+        throw "Python package installation completed but import still failed: $PackageName"
+    }
 }
 
 function Ensure-Dependencies {
