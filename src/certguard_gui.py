@@ -17,6 +17,7 @@ except Exception:
 BASE_DIR = Path(r"C:\ProgramData\CertGuard-PA")
 CONFIG_PATH = BASE_DIR / "config.json"
 AGENT_PATH = BASE_DIR / "certguard_agent.py"
+INSTALLER_PATH = BASE_DIR / "Install-CertGuard-PA.ps1"
 
 DEFAULTS = {
     "firewall_host": "",
@@ -34,12 +35,18 @@ DEFAULTS = {
         "block_on_domain_mismatch": True,
         "auto_import_only_if_expiring": True,
         "auto_import_expiry_threshold_days": 7,
-        "require_local_newer_or_different": True
+        "require_local_newer_or_different": True,
+        "use_win_acme_fallback": True
     },
     "deploy": {
         "retry_count": 3,
         "retry_delay_seconds": 5,
         "verify_after_import": True
+    },
+    "win_acme": {
+        "path": "",
+        "base_uri": "https://acme-v02.api.letsencrypt.org/",
+        "renew_timeout_seconds": 900
     },
     "service": {
         "interval_seconds": 3600
@@ -78,13 +85,20 @@ def save_config(data):
 
     secure_data.pop("palo_api_key", None)
     secure_data.pop("pfx_password", None)
-
     CONFIG_PATH.write_text(json.dumps(secure_data, indent=2), encoding="utf-8")
 
 
 def run_agent(command):
     agent = str(AGENT_PATH if AGENT_PATH.exists() else Path(__file__).with_name("certguard_agent.py"))
-    return subprocess.run([sys.executable, agent, command], text=True, capture_output=True, timeout=300)
+    return subprocess.run([sys.executable, agent, command], text=True, capture_output=True, timeout=900)
+
+
+def run_installer_action(action):
+    if not INSTALLER_PATH.exists():
+        raise FileNotFoundError(f"Installer not found in ProgramData: {INSTALLER_PATH}")
+    return subprocess.run([
+        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER_PATH), "-Action", action
+    ], text=True, capture_output=True, timeout=900)
 
 
 def browse_file(entry, filetypes):
@@ -106,7 +120,7 @@ def wizard():
 
     root = tk.Tk()
     root.title("CertGuard-PA Setup Wizard")
-    root.geometry("760x520")
+    root.geometry("820x560")
     root.resizable(False, False)
 
     style = ttk.Style()
@@ -140,14 +154,19 @@ def wizard():
 
     def add_entry(parent, label, key, value="", secret=False, browse=None):
         row = ttk.Frame(parent)
-        row.pack(fill="x", pady=8)
-        ttk.Label(row, text=label, width=28).pack(side="left")
+        row.pack(fill="x", pady=7)
+        ttk.Label(row, text=label, width=30).pack(side="left")
         ent = ttk.Entry(row, show="*" if secret else None)
         ent.pack(side="left", fill="x", expand=True)
         ent.insert(0, str(value or ""))
         entries[key] = ent
         if browse:
-            filetypes = [("PFX/P12 files", "*.pfx *.p12"), ("All files", "*.*")] if browse == "pfx" else [("Executable", "*.exe"), ("All files", "*.*")]
+            if browse == "pfx":
+                filetypes = [("PFX/P12 files", "*.pfx *.p12"), ("All files", "*.*")]
+            elif browse == "exe":
+                filetypes = [("Executable", "*.exe"), ("All files", "*.*")]
+            else:
+                filetypes = [("All files", "*.*")]
             ttk.Button(row, text="Browse", command=lambda: browse_file(ent, filetypes)).pack(side="left", padx=(8, 0))
         return ent
 
@@ -169,25 +188,33 @@ def wizard():
     vars_["block_on_domain_mismatch"] = tk.BooleanVar(value=bool(policy.get("block_on_domain_mismatch", True)))
     vars_["auto_import_only_if_expiring"] = tk.BooleanVar(value=bool(policy.get("auto_import_only_if_expiring", True)))
     vars_["require_local_newer_or_different"] = tk.BooleanVar(value=bool(policy.get("require_local_newer_or_different", True)))
-    ttk.Checkbutton(p3, text="Import if certificate does not exist on Palo Alto", variable=vars_["import_if_pa_cert_missing"]).pack(anchor="w", pady=5)
-    ttk.Checkbutton(p3, text="Block import if local certificate does not match expected FQDN", variable=vars_["block_on_domain_mismatch"]).pack(anchor="w", pady=5)
-    ttk.Checkbutton(p3, text="Auto import only if Palo Alto certificate is expiring", variable=vars_["auto_import_only_if_expiring"]).pack(anchor="w", pady=5)
-    ttk.Checkbutton(p3, text="Require local certificate to be newer or different", variable=vars_["require_local_newer_or_different"]).pack(anchor="w", pady=5)
+    vars_["use_win_acme_fallback"] = tk.BooleanVar(value=bool(policy.get("use_win_acme_fallback", True)))
+    ttk.Checkbutton(p3, text="Import if certificate does not exist on Palo Alto", variable=vars_["import_if_pa_cert_missing"]).pack(anchor="w", pady=4)
+    ttk.Checkbutton(p3, text="Block import if local certificate does not match expected FQDN", variable=vars_["block_on_domain_mismatch"]).pack(anchor="w", pady=4)
+    ttk.Checkbutton(p3, text="Auto import only if Palo Alto certificate is expiring", variable=vars_["auto_import_only_if_expiring"]).pack(anchor="w", pady=4)
+    ttk.Checkbutton(p3, text="Require local certificate to be newer or different", variable=vars_["require_local_newer_or_different"]).pack(anchor="w", pady=4)
+    ttk.Checkbutton(p3, text="Use win-acme fallback if local certificate is not newer", variable=vars_["use_win_acme_fallback"]).pack(anchor="w", pady=4)
     add_entry(p3, "Expiry Threshold Days", "auto_import_expiry_threshold_days", policy.get("auto_import_expiry_threshold_days", 7))
 
-    p4 = add_page("Step 4 - Deploy and Service", "Configure commit, retry and service interval settings.")
+    p4 = add_page("Step 4 - win-acme", "Configure optional win-acme fallback renewal.")
+    win_acme = cfg.get("win_acme", {})
+    add_entry(p4, "wacs.exe Path", "wacs_path", win_acme.get("path", ""), browse="exe")
+    add_entry(p4, "ACME Base URI", "wacs_base_uri", win_acme.get("base_uri", "https://acme-v02.api.letsencrypt.org/"))
+    add_entry(p4, "Renew Timeout Seconds", "wacs_timeout", win_acme.get("renew_timeout_seconds", 900))
+
+    p5 = add_page("Step 5 - Deploy and Service", "Configure commit, retry and service interval settings.")
     deploy = cfg.get("deploy", {})
     service = cfg.get("service", {})
     vars_["commit_after_import"] = tk.BooleanVar(value=bool(cfg.get("commit_after_import", False)))
     vars_["verify_after_import"] = tk.BooleanVar(value=bool(deploy.get("verify_after_import", True)))
-    ttk.Checkbutton(p4, text="Commit after import", variable=vars_["commit_after_import"]).pack(anchor="w", pady=5)
-    ttk.Checkbutton(p4, text="Verify after import", variable=vars_["verify_after_import"]).pack(anchor="w", pady=5)
-    add_entry(p4, "Retry Count", "retry_count", deploy.get("retry_count", 3))
-    add_entry(p4, "Retry Delay Seconds", "retry_delay_seconds", deploy.get("retry_delay_seconds", 5))
-    add_entry(p4, "Service Interval Seconds", "interval_seconds", service.get("interval_seconds", 3600))
+    ttk.Checkbutton(p5, text="Commit after import", variable=vars_["commit_after_import"]).pack(anchor="w", pady=5)
+    ttk.Checkbutton(p5, text="Verify after import", variable=vars_["verify_after_import"]).pack(anchor="w", pady=5)
+    add_entry(p5, "Retry Count", "retry_count", deploy.get("retry_count", 3))
+    add_entry(p5, "Retry Delay Seconds", "retry_delay_seconds", deploy.get("retry_delay_seconds", 5))
+    add_entry(p5, "Service Interval Seconds", "interval_seconds", service.get("interval_seconds", 3600))
 
-    p5 = add_page("Step 5 - Review and Actions", "Save configuration and run tests or deployment.")
-    log_box = tk.Text(p5, height=15, wrap="word")
+    p6 = add_page("Step 6 - Review and Actions", "Save configuration, install service, and run tests.")
+    log_box = tk.Text(p6, height=15, wrap="word")
     log_box.pack(fill="both", expand=True)
 
     def append_log(text):
@@ -210,12 +237,18 @@ def wizard():
                 "block_on_domain_mismatch": bool(vars_["block_on_domain_mismatch"].get()),
                 "auto_import_only_if_expiring": bool(vars_["auto_import_only_if_expiring"].get()),
                 "auto_import_expiry_threshold_days": int(entries["auto_import_expiry_threshold_days"].get()),
-                "require_local_newer_or_different": bool(vars_["require_local_newer_or_different"].get())
+                "require_local_newer_or_different": bool(vars_["require_local_newer_or_different"].get()),
+                "use_win_acme_fallback": bool(vars_["use_win_acme_fallback"].get())
             },
             "deploy": {
                 "retry_count": int(entries["retry_count"].get()),
                 "retry_delay_seconds": int(entries["retry_delay_seconds"].get()),
                 "verify_after_import": bool(vars_["verify_after_import"].get())
+            },
+            "win_acme": {
+                "path": entries["wacs_path"].get().strip(),
+                "base_uri": entries["wacs_base_uri"].get().strip(),
+                "renew_timeout_seconds": int(entries["wacs_timeout"].get())
             },
             "service": {"interval_seconds": int(entries["interval_seconds"].get())}
         }
@@ -240,14 +273,34 @@ def wizard():
         except Exception as exc:
             append_log(f"ERROR: {exc}")
 
-    action_row = ttk.Frame(p5)
-    action_row.pack(fill="x", pady=(8, 0))
-    ttk.Button(action_row, text="Save", command=save_action).pack(side="left", padx=4)
-    ttk.Button(action_row, text="Test API", command=lambda: run_action("test-pa")).pack(side="left", padx=4)
-    ttk.Button(action_row, text="Inspect PFX", command=lambda: run_action("inspect-pfx")).pack(side="left", padx=4)
-    ttk.Button(action_row, text="Policy", command=lambda: run_action("policy")).pack(side="left", padx=4)
-    ttk.Button(action_row, text="Deploy", command=lambda: run_action("deploy")).pack(side="left", padx=4)
-    ttk.Button(action_row, text="Debug Folder", command=open_debug_panel).pack(side="left", padx=4)
+    def installer_action(action):
+        save_action()
+        append_log(f"> Install-CertGuard-PA.ps1 -Action {action}")
+        try:
+            proc = run_installer_action(action)
+            if proc.stdout:
+                append_log(proc.stdout.strip())
+            if proc.stderr:
+                append_log(proc.stderr.strip())
+            append_log(f"Exit code: {proc.returncode}")
+        except Exception as exc:
+            append_log(f"ERROR: {exc}")
+
+    action_row1 = ttk.Frame(p6)
+    action_row1.pack(fill="x", pady=(8, 0))
+    ttk.Button(action_row1, text="Save", command=save_action).pack(side="left", padx=4)
+    ttk.Button(action_row1, text="Install Service", command=lambda: installer_action("InstallSilent")).pack(side="left", padx=4)
+    ttk.Button(action_row1, text="Health", command=lambda: run_action("health")).pack(side="left", padx=4)
+    ttk.Button(action_row1, text="Test API", command=lambda: run_action("test-pa")).pack(side="left", padx=4)
+    ttk.Button(action_row1, text="Test WACS", command=lambda: run_action("test-wacs")).pack(side="left", padx=4)
+
+    action_row2 = ttk.Frame(p6)
+    action_row2.pack(fill="x", pady=(8, 0))
+    ttk.Button(action_row2, text="Inspect PFX", command=lambda: run_action("inspect-pfx")).pack(side="left", padx=4)
+    ttk.Button(action_row2, text="Policy", command=lambda: run_action("policy")).pack(side="left", padx=4)
+    ttk.Button(action_row2, text="Deploy", command=lambda: run_action("deploy")).pack(side="left", padx=4)
+    ttk.Button(action_row2, text="Renew WACS", command=lambda: run_action("renew-wacs")).pack(side="left", padx=4)
+    ttk.Button(action_row2, text="Debug Folder", command=open_debug_panel).pack(side="left", padx=4)
 
     def show_page():
         for frame, _, _ in pages:
