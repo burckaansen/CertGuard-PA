@@ -1,12 +1,11 @@
 # ASCII only
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -16,8 +15,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -152,6 +149,8 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName("card")
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(8)
         self.title = QLabel(title)
         self.title.setObjectName("cardTitle")
         self.value = QLabel(value)
@@ -161,6 +160,7 @@ class Card(QFrame):
         layout.addWidget(self.title)
         layout.addWidget(self.value)
         layout.addWidget(self.hint)
+        layout.addStretch()
 
     def set_value(self, value, tone="neutral"):
         self.value.setText(value)
@@ -176,10 +176,13 @@ class FormPage(QWidget):
         self.form.setHorizontalSpacing(14)
         self.form.setVerticalSpacing(12)
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
         header = QLabel(title)
         header.setObjectName("pageTitle")
         sub = QLabel(subtitle)
         sub.setObjectName("pageSubtitle")
+        sub.setWordWrap(True)
         root.addWidget(header)
         root.addWidget(sub)
         root.addSpacing(12)
@@ -226,12 +229,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CertGuard-PA")
-        self.resize(1180, 720)
+        self.resize(1280, 760)
+        self.setMinimumSize(1060, 660)
         self.cfg = load_config()
         self.worker = None
         self.fields = {}
         self.checks = {}
         self.cards = {}
+        self.nav_buttons = []
         self.build_ui()
 
     def build_ui(self):
@@ -243,27 +248,39 @@ class MainWindow(QMainWindow):
         sidebar_frame = QFrame()
         sidebar_frame.setObjectName("sidebar")
         sidebar_layout = QVBoxLayout(sidebar_frame)
+        sidebar_layout.setContentsMargins(26, 28, 24, 24)
+        sidebar_layout.setSpacing(10)
+
         brand = QLabel("CertGuard-PA")
         brand.setObjectName("brand")
+        brand.setWordWrap(False)
         subtitle = QLabel("Palo Alto Certificate Automation")
         subtitle.setObjectName("brandSub")
+        subtitle.setWordWrap(True)
         sidebar_layout.addWidget(brand)
         sidebar_layout.addWidget(subtitle)
-        sidebar_layout.addSpacing(18)
+        sidebar_layout.addSpacing(22)
 
-        self.nav = QListWidget()
-        self.nav.setObjectName("nav")
-        for name in ["Dashboard", "Palo Alto", "Certificate", "Policy", "win-acme", "Service", "Operations"]:
-            self.nav.addItem(QListWidgetItem(name))
-        self.nav.currentRowChanged.connect(self.switch_page)
-        sidebar_layout.addWidget(self.nav)
+        nav_items = ["Dashboard", "Palo Alto", "Certificate", "Policy", "win-acme", "Service", "Operations"]
+        for index, name in enumerate(nav_items):
+            btn = QPushButton(name)
+            btn.setObjectName("navButton")
+            btn.setProperty("active", index == 0)
+            btn.clicked.connect(lambda checked=False, row=index: self.switch_page(row))
+            sidebar_layout.addWidget(btn)
+            self.nav_buttons.append(btn)
+
         sidebar_layout.addStretch()
+
+        version = QLabel("v1 baseline")
+        version.setObjectName("versionText")
+        sidebar_layout.addWidget(version)
 
         self.stack = QStackedWidget()
         content = QFrame()
         content.setObjectName("content")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(26, 24, 26, 24)
+        content_layout.setContentsMargins(34, 30, 34, 30)
         content_layout.addWidget(self.stack)
 
         main.addWidget(sidebar_frame, 0)
@@ -277,20 +294,24 @@ class MainWindow(QMainWindow):
         self.build_wacs_page()
         self.build_service_page()
         self.build_operations_page()
-        self.nav.setCurrentRow(0)
+        self.switch_page(0)
 
     def build_dashboard(self):
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
         title = QLabel("Dashboard")
         title.setObjectName("pageTitle")
         sub = QLabel("Live operational view for certificate automation.")
         sub.setObjectName("pageSubtitle")
         layout.addWidget(title)
         layout.addWidget(sub)
-        layout.addSpacing(18)
+        layout.addSpacing(20)
 
         grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
         self.cards["health"] = Card("Health", "Unknown", "Run health check")
         self.cards["policy"] = Card("Policy", "Unknown", "Last policy decision")
         self.cards["deploy"] = Card("Deploy", "Unknown", "Last deployment")
@@ -300,9 +321,10 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.cards["deploy"], 1, 0)
         grid.addWidget(self.cards["service"], 1, 1)
         layout.addLayout(grid)
-        layout.addSpacing(16)
+        layout.addSpacing(18)
 
         actions = QHBoxLayout()
+        actions.setSpacing(12)
         self.add_action_button(actions, "Health Check", "agent", "health", primary=False)
         self.add_action_button(actions, "Deploy Certificate", "agent", "deploy", primary=True)
         self.add_action_button(actions, "Install Service", "installer", "InstallSilent", primary=False)
@@ -358,6 +380,8 @@ class MainWindow(QMainWindow):
     def build_operations_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
         title = QLabel("Operations")
         title.setObjectName("pageTitle")
         sub = QLabel("Run diagnostics, deploy certificate, and manage the service.")
@@ -366,12 +390,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(sub)
         layout.addSpacing(14)
         row1 = QHBoxLayout()
+        row1.setSpacing(10)
         self.add_action_button(row1, "Save", "local", "save")
         self.add_action_button(row1, "Health", "agent", "health")
         self.add_action_button(row1, "Test API", "agent", "test-pa")
         self.add_action_button(row1, "Test WACS", "agent", "test-wacs")
         layout.addLayout(row1)
         row2 = QHBoxLayout()
+        row2.setSpacing(10)
         self.add_action_button(row2, "Policy", "agent", "policy")
         self.add_action_button(row2, "Compare", "agent", "compare")
         self.add_action_button(row2, "Deploy", "agent", "deploy", primary=True)
@@ -392,6 +418,10 @@ class MainWindow(QMainWindow):
 
     def switch_page(self, index):
         self.stack.setCurrentIndex(index)
+        for row, button in enumerate(self.nav_buttons):
+            button.setProperty("active", row == index)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def append_log(self, text):
         if not hasattr(self, "log_box"):
@@ -485,40 +515,52 @@ QWidget {
 }
 #sidebar {
     background: #111827;
-    min-width: 240px;
-    max-width: 240px;
+    min-width: 300px;
+    max-width: 300px;
     border-right: 1px solid #1f2937;
 }
 #brand {
-    font-size: 22pt;
-    font-weight: 700;
+    font-size: 21pt;
+    font-weight: 800;
     color: #f9fafb;
-    margin: 24px 18px 0px 18px;
+    padding: 0px;
+    margin: 0px;
 }
 #brandSub {
     color: #94a3b8;
-    margin: 0px 18px 16px 18px;
+    font-size: 10.5pt;
+    padding: 0px;
+    margin: 0px;
 }
-#nav {
+#versionText {
+    color: #64748b;
+    font-size: 9pt;
+    padding: 8px 2px 0px 2px;
+}
+#navButton {
+    text-align: left;
     background: transparent;
-    border: 0;
-    padding: 8px;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    padding: 13px 16px;
+    color: #cbd5e1;
+    font-weight: 600;
 }
-#nav::item {
-    padding: 13px 14px;
-    border-radius: 12px;
-    margin: 4px 8px;
+#navButton:hover {
+    background: #1e293b;
+    color: #f8fafc;
 }
-#nav::item:selected {
+#navButton[active="true"] {
     background: #2563eb;
+    border: 1px solid #3b82f6;
     color: white;
 }
 #content {
     background: #0f172a;
 }
 #pageTitle {
-    font-size: 24pt;
-    font-weight: 700;
+    font-size: 25pt;
+    font-weight: 800;
     color: #f8fafc;
 }
 #pageSubtitle {
@@ -528,18 +570,18 @@ QWidget {
 #card {
     background: #111827;
     border: 1px solid #1f2937;
-    border-radius: 18px;
-    padding: 16px;
-    min-height: 120px;
+    border-radius: 20px;
+    min-height: 145px;
 }
 #cardTitle {
     color: #94a3b8;
     font-size: 10pt;
+    font-weight: 600;
 }
 #cardValue {
     color: #f8fafc;
-    font-size: 20pt;
-    font-weight: 700;
+    font-size: 21pt;
+    font-weight: 800;
 }
 #cardValue[tone="ok"] { color: #22c55e; }
 #cardValue[tone="bad"] { color: #ef4444; }
@@ -549,19 +591,23 @@ QWidget {
 QLineEdit, QTextEdit {
     background: #111827;
     border: 1px solid #334155;
-    border-radius: 10px;
+    border-radius: 11px;
     padding: 9px;
     color: #f8fafc;
+}
+QLineEdit:focus, QTextEdit:focus {
+    border: 1px solid #3b82f6;
 }
 QCheckBox {
     padding: 5px;
 }
 QPushButton {
     border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 10px 14px;
+    border-radius: 13px;
+    padding: 11px 15px;
     background: #1f2937;
     color: #e5e7eb;
+    font-weight: 600;
 }
 QPushButton:hover {
     background: #334155;
@@ -569,8 +615,11 @@ QPushButton:hover {
 #primaryButton {
     background: #2563eb;
     color: white;
-    font-weight: 700;
+    font-weight: 800;
     border: 1px solid #3b82f6;
+}
+#primaryButton:hover {
+    background: #1d4ed8;
 }
 #secondaryButton {
     background: #1f2937;
