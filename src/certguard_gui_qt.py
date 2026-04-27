@@ -245,6 +245,18 @@ class FormPage(QWidget):
         root.addStretch()
         self.row = 0
 
+    def add_section(self, title, hint=""):
+        label = QLabel(title)
+        label.setObjectName("sectionTitle")
+        self.form.addWidget(label, self.row, 0, 1, 3)
+        self.row += 1
+        if hint:
+            sub = QLabel(hint)
+            sub.setObjectName("sectionHint")
+            sub.setWordWrap(True)
+            self.form.addWidget(sub, self.row, 0, 1, 3)
+            self.row += 1
+
     def add_line(self, label, value="", password=False, browse=None):
         lbl = QLabel(label)
         edit = QLineEdit()
@@ -424,13 +436,15 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(p)
 
     def build_service_page(self):
-        p = FormPage("Service", "Windows service and retry behavior.")
+        p = FormPage("Service", "Windows service schedule plus Palo Alto deployment behavior.")
         deploy = self.cfg.get("deploy", {})
         service = self.cfg.get("service", {})
-        self.checks["commit_after_import"] = p.add_check("Commit after import", self.cfg.get("commit_after_import", False))
-        self.checks["verify_after_import"] = p.add_check("Verify after import", deploy.get("verify_after_import", True))
-        self.fields["retry_count"] = p.add_line("Retry Count", deploy.get("retry_count", 3))
-        self.fields["retry_delay_seconds"] = p.add_line("Retry Delay Seconds", deploy.get("retry_delay_seconds", 5))
+        p.add_section("Palo Alto Deployment Options", "These options affect Palo Alto certificate import behavior, not the Windows service itself.")
+        self.checks["commit_after_import"] = p.add_check("Palo Alto: Commit after certificate import", self.cfg.get("commit_after_import", False))
+        self.checks["verify_after_import"] = p.add_check("Palo Alto: Verify certificate after import", deploy.get("verify_after_import", True))
+        self.fields["retry_count"] = p.add_line("Palo Alto Import Retry Count", deploy.get("retry_count", 3))
+        self.fields["retry_delay_seconds"] = p.add_line("Palo Alto Import Retry Delay Seconds", deploy.get("retry_delay_seconds", 5))
+        p.add_section("Windows Service Schedule", "These options control the local CertGuard-PA background service loop.")
         self.fields["interval_seconds"] = p.add_line("Service Interval Seconds", service.get("interval_seconds", 3600))
         self.stack.addWidget(p)
 
@@ -625,6 +639,17 @@ QWidget {
 #pageSubtitle {
     color: #94a3b8;
     font-size: 11pt;
+}
+#sectionTitle {
+    color: #e2e8f0;
+    font-size: 12pt;
+    font-weight: 800;
+    padding-top: 10px;
+}
+#sectionHint {
+    color: #94a3b8;
+    font-size: 9.5pt;
+    padding-bottom: 8px;
 }
 #card {
     background: #111827;
