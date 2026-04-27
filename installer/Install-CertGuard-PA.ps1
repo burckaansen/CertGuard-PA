@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","TestWacs","RenewWacs","Health","Repair")]
+    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","GuiLegacy","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","TestWacs","RenewWacs","Health","Repair")]
     [string]$Action = "Install"
 )
 
@@ -11,7 +11,8 @@ $InstallDir = "C:\ProgramData\CertGuard-PA"
 $LogDir = Join-Path $InstallDir "logs"
 $SrcDir = Join-Path (Split-Path -Parent $PSScriptRoot) "src"
 $Agent = Join-Path $InstallDir "certguard_agent.py"
-$Gui = Join-Path $InstallDir "certguard_gui.py"
+$Gui = Join-Path $InstallDir "certguard_gui_qt.py"
+$GuiLegacy = Join-Path $InstallDir "certguard_gui.py"
 $RuntimeInstaller = Join-Path $InstallDir "Install-CertGuard-PA.ps1"
 $EventSource = "CertGuard-PA"
 
@@ -69,15 +70,18 @@ function Ensure-Dependencies {
     Ensure-Package "cryptography" "cryptography"
 }
 
+function Ensure-GuiDependencies {
+    Ensure-Dependencies
+    Ensure-Package "PySide6" "PySide6"
+}
+
 function Ensure-EventSource {
     try {
         if (-not [System.Diagnostics.EventLog]::SourceExists($EventSource)) {
             New-EventLog -LogName Application -Source $EventSource
             Write-Host "[INFO] Event Log source registered: $EventSource"
         }
-    } catch {
-        Write-Warning "Event source registration failed: $($_.Exception.Message)"
-    }
+    } catch { Write-Warning "Event source registration failed: $($_.Exception.Message)" }
 }
 
 function Deploy-Files {
@@ -163,7 +167,7 @@ function Show-Status {
 
 Assert-Admin
 switch ($Action) {
-    "Install" { Deploy-Files; Ensure-Dependencies; Ensure-EventSource; Invoke-PythonChecked @($Gui) }
+    "Install" { Deploy-Files; Ensure-GuiDependencies; Ensure-EventSource; Invoke-PythonChecked @($Gui) }
     "InstallSilent" { Install-Service }
     "Repair" { Install-Service }
     "Uninstall" { Uninstall-App }
@@ -171,7 +175,8 @@ switch ($Action) {
     "Stop" { sc.exe stop $ServiceName }
     "Restart" { sc.exe stop $ServiceName; Start-Sleep -Seconds 2; sc.exe start $ServiceName }
     "Status" { Show-Status }
-    "Gui" { Deploy-Files; Ensure-Dependencies; Invoke-PythonChecked @($Gui) }
+    "Gui" { Deploy-Files; Ensure-GuiDependencies; Invoke-PythonChecked @($Gui) }
+    "GuiLegacy" { Deploy-Files; Ensure-Dependencies; Invoke-PythonChecked @($GuiLegacy) }
     "Debug" { Invoke-Agent "debug" }
     "Deploy" { Invoke-Agent "deploy" }
     "ForceDeploy" { Invoke-Agent "force-deploy" }
