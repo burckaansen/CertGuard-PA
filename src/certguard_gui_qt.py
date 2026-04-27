@@ -5,7 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QPoint, QThread, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -69,6 +70,60 @@ DEFAULT_CONFIG = {
         "interval_seconds": 3600,
     },
 }
+
+
+def build_app_icon():
+    pixmap = QPixmap(256, 256)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    painter.setBrush(QColor(15, 23, 42))
+    painter.setPen(QPen(QColor(59, 130, 246), 4))
+    painter.drawRoundedRect(18, 18, 220, 220, 44, 44)
+
+    painter.setPen(QPen(QColor(30, 64, 175), 2))
+    painter.drawRoundedRect(35, 35, 186, 186, 34, 34)
+
+    shield = QPolygon([
+        QPoint(128, 54), QPoint(187, 78), QPoint(178, 151),
+        QPoint(128, 198), QPoint(78, 151), QPoint(69, 78),
+    ])
+    painter.setBrush(QColor(37, 99, 235))
+    painter.setPen(QPen(QColor(147, 197, 253), 2))
+    painter.drawPolygon(shield)
+
+    inner = QPolygon([
+        QPoint(128, 72), QPoint(168, 91), QPoint(162, 143),
+        QPoint(128, 178), QPoint(94, 143), QPoint(88, 91),
+    ])
+    painter.setBrush(QColor(30, 41, 59))
+    painter.setPen(QPen(QColor(96, 165, 250), 2))
+    painter.drawPolygon(inner)
+
+    painter.setBrush(QColor(248, 250, 252))
+    painter.setPen(QPen(QColor(248, 250, 252), 1))
+    painter.drawRoundedRect(102, 98, 52, 56, 7, 7)
+    painter.setBrush(QColor(191, 219, 254))
+    painter.drawPolygon(QPolygon([QPoint(142, 98), QPoint(154, 110), QPoint(142, 110)]))
+
+    painter.setPen(QPen(QColor(37, 99, 235), 3))
+    painter.drawLine(113, 116, 145, 116)
+    painter.drawLine(113, 128, 145, 128)
+    painter.drawLine(113, 140, 145, 140)
+
+    painter.setBrush(QColor(59, 130, 246))
+    painter.setPen(QPen(QColor(59, 130, 246), 1))
+    painter.drawRoundedRect(106, 160, 44, 34, 8, 8)
+    painter.setPen(QPen(QColor(191, 219, 254), 6))
+    painter.drawArc(111, 138, 34, 40, 0, 180 * 16)
+    painter.setBrush(QColor(15, 23, 42))
+    painter.setPen(QPen(QColor(15, 23, 42), 1))
+    painter.drawEllipse(124, 172, 8, 8)
+    painter.drawRoundedRect(126, 179, 4, 10, 2, 2)
+
+    painter.end()
+    return QIcon(pixmap)
 
 
 def deep_merge(base, override):
@@ -226,9 +281,11 @@ class FormPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, app_icon=None):
         super().__init__()
         self.setWindowTitle("CertGuard-PA")
+        if app_icon is not None:
+            self.setWindowIcon(app_icon)
         self.resize(1280, 760)
         self.setMinimumSize(1060, 660)
         self.cfg = load_config()
@@ -500,8 +557,10 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app_icon = build_app_icon()
+    app.setWindowIcon(app_icon)
     app.setStyleSheet(STYLE)
-    window = MainWindow()
+    window = MainWindow(app_icon=app_icon)
     window.show()
     sys.exit(app.exec())
 
