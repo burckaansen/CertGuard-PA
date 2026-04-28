@@ -51,20 +51,42 @@ $agent = $agent.Replace('if proc.returncode != 0:', 'if returncode != 0:')
 $agent = $agent.Replace('raise CertGuardError(f"win-acme renew failed with code {proc.returncode}")', 'raise CertGuardError(f"win-acme renew failed with code {returncode}")')
 $agent = $agent.Replace('return {"renewed": True, "returncode": proc.returncode}', 'return {"renewed": True, "returncode": returncode}')
 
-$agent = [regex]::Replace(
-    $agent,
-    'proc = subprocess\.run\(\[wacs_path, "--verbose"\], text=True, capture_output=True, timeout=90\)\s*\r?\n\s*output = \(\(proc\.stdout or ""\) \+ "\\n" \+ \(proc\.stderr or ""\)\)\[-4000:\]\s*\r?\n\s*result = \{"exists": True, "returncode": proc\.returncode, "output_tail": output\}',
-    'returncode, output = run_process_capture([wacs_path, "--verbose"], 30)' + "`r`n" + '    output = output[-4000:]' + "`r`n" + '    result = {"exists": True, "returncode": returncode, "output_tail": output}',
-    1
-)
+# Replace the entire test_win_acme function with a path-only check. TestWacs must not execute wacs.exe.
+$testFunction = @'
+def test_win_acme():
+    config = load_config()
+    wacs_path = config.get("win_acme", {}).get("path", "")
+    if not wacs_path:
+        raise CertGuardError("win-acme path is not configured")
+    path_obj = Path(wacs_path)
+    if not path_obj.exists():
+        raise FileNotFoundError(f"wacs.exe not found: {wacs_path}")
+    result = {
+        "exists": True,
+        "path": str(path_obj),
+        "file_name": path_obj.name,
+        "size_bytes": path_obj.stat().st_size,
+        "note": "Path check only. Use renew-wacs for actual win-acme renewal."
+    }
+    state = load_state()
+    state["last_wacs_test"] = result
+    state["last_wacs_test_time"] = utc_now_text()
+    save_state(state)
+    log("win-acme path test completed", "INFO", 383)
+    return result
 
-$agent = $agent.Replace('log(f"win-acme test completed returncode={proc.returncode}", "INFO", 383)', 'log(f"win-acme test completed returncode={returncode}", "INFO", 383)')
+
+'@
+$agent = [regex]::Replace($agent, '(?s)def test_win_acme\(\):.*?(?=\ndef evaluate_policy\()', $testFunction, 1)
 
 if ($agent -match 'text=True, capture_output=True') {
     throw "Patch failed: unsafe subprocess capture is still present."
 }
 if ($agent -notmatch "def run_process_capture\(") {
     throw "Patch failed: helper function missing."
+}
+if ($agent -match 'run_process_capture\(\[wacs_path, "--verbose"\]') {
+    throw "Patch failed: TestWacs still executes wacs.exe --verbose."
 }
 
 Set-Content -Path $AgentPath -Value $agent -Encoding UTF8
