@@ -248,11 +248,7 @@ def inspect_pfx(pfx_path, password, expected_domain=""):
         raise FileNotFoundError(f"PFX file not found: {pfx_file}")
     try:
         with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="PKCS#12 bundle could not be parsed as DER.*",
-                category=UserWarning,
-            )
+            warnings.filterwarnings("ignore", message="PKCS#12 bundle could not be parsed as DER.*", category=UserWarning)
             private_key, cert, additional_certs = pkcs12.load_key_and_certificates(
                 pfx_file.read_bytes(),
                 None if password is None else str(password).encode("utf-8"),
@@ -458,7 +454,30 @@ def compare_certificates():
     state["last_compare_time"] = utc_now_text()
     save_state(state)
     log(f"Compare completed: remote_found={result['remote_found']} same={result['same_fingerprint']} local_newer={result['local_newer']} domain_match={result['domain_match']}", "INFO", 340)
+    log(f"Certificate comparison summary: local_days_left={result.get('local_days_left')} remote_days_left={result.get('remote_days_left')} remote_found={result.get('remote_found')} same_fingerprint={result.get('same_fingerprint')}", "INFO", 341)
     return result
+
+
+def decode_process_output(data):
+    if not data:
+        return ""
+    for encoding in ["utf-8", "cp850", "cp1252"]:
+        try:
+            return data.decode(encoding, errors="replace")
+        except Exception:
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
+def run_process_capture(args, timeout):
+    proc = subprocess.run(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+    )
+    return proc.returncode, decode_process_output(proc.stdout)
 
 
 def run_win_acme_renew():
@@ -472,18 +491,18 @@ def run_win_acme_renew():
     if not Path(wacs_path).exists():
         raise FileNotFoundError(f"wacs.exe not found: {wacs_path}")
     log("win-acme fallback renewal started", "WARN", 380)
-    proc = subprocess.run([wacs_path, "--renew", "--baseuri", base_uri], text=True, capture_output=True, timeout=timeout)
-    output = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-6000:]
+    returncode, output = run_process_capture([wacs_path, "--renew", "--baseuri", base_uri], timeout)
+    output = output[-6000:]
     state = load_state()
     state["last_wacs_renew_time"] = utc_now_text()
-    state["last_wacs_renew_returncode"] = proc.returncode
+    state["last_wacs_renew_returncode"] = returncode
     state["last_wacs_renew_output"] = output
     save_state(state)
-    if proc.returncode != 0:
+    if returncode != 0:
         log(f"win-acme fallback renewal failed: {output[-900:]}", "ERROR", 381)
-        raise CertGuardError(f"win-acme renew failed with code {proc.returncode}")
+        raise CertGuardError(f"win-acme renew failed with code {returncode}")
     log("win-acme fallback renewal completed successfully", "INFO", 382)
-    return {"renewed": True, "returncode": proc.returncode}
+    return {"renewed": True, "returncode": returncode}
 
 
 def test_win_acme():
@@ -491,16 +510,21 @@ def test_win_acme():
     wacs_path = config.get("win_acme", {}).get("path", "")
     if not wacs_path:
         raise CertGuardError("win-acme path is not configured")
-    if not Path(wacs_path).exists():
+    path_obj = Path(wacs_path)
+    if not path_obj.exists():
         raise FileNotFoundError(f"wacs.exe not found: {wacs_path}")
-    proc = subprocess.run([wacs_path, "--verbose"], text=True, capture_output=True, timeout=90)
-    output = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-    result = {"exists": True, "returncode": proc.returncode, "output_tail": output}
+    result = {
+        "exists": True,
+        "path": str(path_obj),
+        "file_name": path_obj.name,
+        "size_bytes": path_obj.stat().st_size,
+        "note": "Path check only. Use renew-wacs for actual win-acme renewal."
+    }
     state = load_state()
     state["last_wacs_test"] = result
     state["last_wacs_test_time"] = utc_now_text()
     save_state(state)
-    log(f"win-acme test completed returncode={proc.returncode}", "INFO", 383)
+    log("win-acme path test completed", "INFO", 383)
     return result
 
 
@@ -540,6 +564,10 @@ def policy_decision():
     save_state(state)
     level = "WARN" if decision["action"] in ["import", "block"] else "INFO"
     log(f"Policy decision: action={decision['action']} reason={decision['reason']}", level, 350)
+    if decision.get("should_import"):
+        log(f"Certificate import required: {decision.get('reason', 'policy matched')}", "WARN", 353)
+    else:
+        log(f"No certificate change required: {decision.get('reason', 'policy skipped')}", "INFO", 351)
     return result
 
 
@@ -560,11 +588,7 @@ def import_certificate_once():
     xml_text = palo_multipart_import(config, params, Path(config.get("pfx_path", "")))
     parse_palo_response(xml_text)
     log(f"Certificate import completed: {config.get('certificate_name')} block_private_key_export={block_private_key_export}", "INFO", 360)
-    return {
-        "imported": True,
-        "local_fingerprint_sha256": local.get("fingerprint_sha256"),
-        "block_private_key_export": block_private_key_export,
-    }
+    return {"imported": True, "local_fingerprint_sha256": local.get("fingerprint_sha256"), "block_private_key_export": block_private_key_export}
 
 
 def verify_import(expected_fingerprint):
@@ -590,7 +614,6 @@ def deploy_certificate(force=False):
     verify_after_import = bool(deploy_config.get("verify_after_import", True))
     decision_result = policy_decision()
     decision = decision_result.get("decision", {})
-
     if not force and not decision.get("should_import", False):
         if config.get("policy", {}).get("use_win_acme_fallback", True) and "not newer" in decision.get("reason", ""):
             run_win_acme_renew()
@@ -603,7 +626,6 @@ def deploy_certificate(force=False):
             save_state(state)
             log(f"Deploy skipped: {result['reason']}", "INFO", 351)
             return result
-
     last_error = ""
     for attempt in range(1, retry_count + 1):
         try:
@@ -668,6 +690,7 @@ def service_tick():
         action = result["decision"]["action"]
         log(f"Policy tick completed: action={action}", "INFO", 302)
         if result["decision"].get("should_import"):
+            log(f"Certificate import required by scheduled service tick: {result['decision'].get('reason', 'policy matched')}", "WARN", 354)
             deploy_certificate(force=False)
     except Exception as exc:
         log(f"Policy tick failed: {exc}", "ERROR", 303)
@@ -681,7 +704,7 @@ def service_loop():
             service_tick()
         except Exception as exc:
             log(f"Service loop error: {exc}", "ERROR", 304)
-        time.sleep(load_config().get("service", {}).get("interval_seconds", 60))
+        time.sleep(int(load_config().get("service", {}).get("interval_seconds", 60)))
 
 
 def run_debug():
@@ -733,10 +756,11 @@ def main():
         print(f"ERROR: {exc}", file=sys.stderr)
         return 3
     except Exception as exc:
-        log(f"Unexpected failure: {exc}", "ERROR", 397)
+        log(f"Unexpected failure: {exc}", "ERROR", 399)
         print(f"ERROR: unexpected failure: {exc}", file=sys.stderr)
         return 1
     return 0
 
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
