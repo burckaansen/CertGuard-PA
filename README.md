@@ -1,7 +1,7 @@
 # CertGuard-PA
 
 <p align="center">
-  <img src="docs/assets/certguard-pa-logo.png" alt="CertGuard-PA logo" width="520">
+  <img src="docs/assets/certguard-pa-logo.svg" alt="CertGuard-PA logo" width="520">
 </p>
 
 <p align="center">
@@ -15,6 +15,12 @@ CertGuard-PA is a Windows service package that monitors local win-acme PFX outpu
 The primary project logo is the premium chrome/silver shield-and-certificate design with the `CertGuard-PA` wordmark.
 
 Canonical asset path:
+
+```text
+docs/assets/certguard-pa-logo.svg
+```
+
+PNG render/export path, when needed:
 
 ```text
 docs/assets/certguard-pa-logo.png
