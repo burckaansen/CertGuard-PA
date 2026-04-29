@@ -14,6 +14,7 @@ $Files = @(
     "certguard_agent.py",
     "certguard_gui.py",
     "certguard_gui_qt.py",
+    "certguard_windows_service.py",
     "certguard_eventlog.py",
     "certguard_secrets.py"
 )
@@ -54,6 +55,7 @@ $LogDir = Join-Path $InstallDir "logs"
 $Agent = Join-Path $InstallDir "certguard_agent.py"
 $Gui = Join-Path $InstallDir "certguard_gui_qt.py"
 $GuiLegacy = Join-Path $InstallDir "certguard_gui.py"
+$ServiceHost = Join-Path $InstallDir "certguard_windows_service.py"
 $RuntimeInstaller = Join-Path $InstallDir "Install-CertGuard-PA.ps1"
 $EventSource = "CertGuard-PA"
 
@@ -61,6 +63,7 @@ $EmbeddedFiles = @{
     "certguard_agent.py" = "__AGENT_B64__"
     "certguard_gui.py" = "__GUI_LEGACY_B64__"
     "certguard_gui_qt.py" = "__GUI_QT_B64__"
+    "certguard_windows_service.py" = "__SERVICE_HOST_B64__"
     "certguard_eventlog.py" = "__EVENTLOG_B64__"
     "certguard_secrets.py" = "__SECRETS_B64__"
 }
@@ -131,6 +134,16 @@ function Ensure-Dependencies {
     Ensure-Package "cryptography" "cryptography"
 }
 
+function Ensure-ServiceDependencies {
+    Ensure-Dependencies
+    Ensure-Package "win32serviceutil" "pywin32"
+    try {
+        Invoke-PythonChecked @("-m", "pywin32_postinstall", "-install")
+    } catch {
+        Write-Warning "pywin32 postinstall failed or was not required: $($_.Exception.Message)"
+    }
+}
+
 function Ensure-GuiDependencies {
     Ensure-Dependencies
     Ensure-Package "PySide6" "PySide6"
@@ -189,34 +202,6 @@ function Invoke-Agent {
     Invoke-PythonChecked @($Agent, $Command)
 }
 
-function Install-Service {
-    Deploy-Files
-    Ensure-Dependencies
-    Ensure-EventSource
-
-    $py = Get-PythonCommand
-    $prefix = Get-PythonPrefix
-    $pythonArgs = ($prefix + @($Agent, "service-loop")) -join " "
-    $binPath = "`"$py`" $pythonArgs"
-
-    sc.exe query $ServiceName *> $null
-    if ($LASTEXITCODE -eq 0) {
-        sc.exe stop $ServiceName *> $null
-        Start-Sleep -Seconds 2
-        sc.exe delete $ServiceName *> $null
-        Start-Sleep -Seconds 2
-    }
-
-    sc.exe create $ServiceName binPath= $binPath start= auto DisplayName= $DisplayName | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "sc.exe create failed." }
-
-    sc.exe description $ServiceName "CertGuard-PA automated Palo Alto certificate lifecycle monitor." | Out-Null
-    sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/120000/restart/300000 | Out-Null
-    sc.exe failureflag $ServiceName 1 | Out-Null
-    sc.exe start $ServiceName | Out-Null
-    Write-Host "[INFO] Service installed and started: $ServiceName"
-}
-
 function Remove-ServiceIfExists {
     sc.exe query $ServiceName *> $null
     if ($LASTEXITCODE -eq 0) {
@@ -228,6 +213,26 @@ function Remove-ServiceIfExists {
     } else {
         Write-Host "[INFO] Service does not exist: $ServiceName"
     }
+}
+
+function Install-Service {
+    Deploy-Files
+    Ensure-ServiceDependencies
+    Ensure-EventSource
+
+    Remove-ServiceIfExists
+
+    Invoke-PythonChecked @($ServiceHost, "install")
+
+    sc.exe config $ServiceName start= auto | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc.exe config start= auto failed." }
+
+    sc.exe description $ServiceName "CertGuard-PA automated Palo Alto certificate lifecycle monitor." | Out-Null
+    sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/120000/restart/300000 | Out-Null
+    sc.exe failureflag $ServiceName 1 | Out-Null
+
+    Invoke-PythonChecked @($ServiceHost, "start")
+    Write-Host "[INFO] Service installed and started: $ServiceName"
 }
 
 function Uninstall-App {
@@ -287,13 +292,9 @@ switch ($Action) {
     "InstallSilent" { Install-Service }
     "Repair" { Install-Service }
     "Uninstall" { Uninstall-App }
-    "Start" { sc.exe start $ServiceName }
-    "Stop" { sc.exe stop $ServiceName }
-    "Restart" {
-        sc.exe stop $ServiceName
-        Start-Sleep -Seconds 2
-        sc.exe start $ServiceName
-    }
+    "Start" { Deploy-Files; Ensure-ServiceDependencies; Invoke-PythonChecked @($ServiceHost, "start") }
+    "Stop" { Deploy-Files; Ensure-ServiceDependencies; Invoke-PythonChecked @($ServiceHost, "stop") }
+    "Restart" { Deploy-Files; Ensure-ServiceDependencies; Invoke-PythonChecked @($ServiceHost, "restart") }
     "Status" { Show-Status }
     "Gui" {
         Deploy-Files
@@ -322,6 +323,7 @@ $Standalone = $Template
 $Standalone = $Standalone.Replace("__AGENT_B64__", $Embedded["certguard_agent.py"])
 $Standalone = $Standalone.Replace("__GUI_LEGACY_B64__", $Embedded["certguard_gui.py"])
 $Standalone = $Standalone.Replace("__GUI_QT_B64__", $Embedded["certguard_gui_qt.py"])
+$Standalone = $Standalone.Replace("__SERVICE_HOST_B64__", $Embedded["certguard_windows_service.py"])
 $Standalone = $Standalone.Replace("__EVENTLOG_B64__", $Embedded["certguard_eventlog.py"])
 $Standalone = $Standalone.Replace("__SECRETS_B64__", $Embedded["certguard_secrets.py"])
 
