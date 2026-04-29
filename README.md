@@ -4,6 +4,20 @@ Automated certificate lifecycle monitoring and deployment for Palo Alto Networks
 
 CertGuard-PA is a Windows service package that monitors local win-acme PFX output, compares it with the certificate installed on Palo Alto, and imports the certificate only when policy conditions are met.
 
+## Current validated baseline
+
+Validated on Windows customer test machine:
+
+```text
+Health      OK
+TestWacs    OK - path/file validation only
+RenewWacs   OK - wacs.exe --renew --baseuri completed with returncode 0
+Service     OK - RUNNING
+Startup     AUTO_START
+Host        pythonservice.exe via pywin32
+Policy      OK - skip when Palo Alto certificate is above threshold
+```
+
 ## Baseline
 
 This repository starts from the clean rebuild baseline formerly tracked as **PA-LE Service v3.4-clean**.
@@ -14,10 +28,69 @@ Baseline principles:
 - Step-by-step setup wizard
 - `Debug` as a separate action
 - Optional `Import if certificate does not exist on Palo Alto`
+- Optional `Block Private Key Export on Palo Alto import`
 - Uninstall asks whether to remove ProgramData
 - Windows Event Log plus file log
-- Windows service created with `sc.exe`, not pywin32
+- Real Windows service host based on pywin32 `ServiceFramework`
+- Windows service is installed with `python certguard_windows_service.py install/start`
+- Do not create the service by pointing `sc.exe binPath` directly to `python certguard_agent.py service-loop`
 - Standalone release generated from repository source, not patched old zip files
+- Current logo/icon design must be preserved in future UI/package work
+
+## Python Windows service rule
+
+Do not use this model:
+
+```text
+sc.exe create CertGuard-PA binPath= "python C:\ProgramData\CertGuard-PA\certguard_agent.py service-loop"
+```
+
+Correct model, aligned with the working Cloudflare-DDNS-Windows project:
+
+```text
+certguard_windows_service.py
+  win32serviceutil.ServiceFramework
+  SvcDoRun
+  SvcStop
+  main_loop
+  win32event.WaitForSingleObject
+
+InstallSilent
+  deploy embedded files
+  ensure pywin32
+  python certguard_windows_service.py install
+  sc.exe config CertGuard-PA start= auto
+  sc.exe failure ...
+  python certguard_windows_service.py start
+```
+
+Expected service configuration:
+
+```text
+STATE            : RUNNING
+START_TYPE       : AUTO_START
+BINARY_PATH_NAME : "C:\Program Files\Python314\pythonservice.exe"
+```
+
+## win-acme behavior
+
+`TestWacs` is intentionally a safe path/file validation only. It does not run `wacs.exe --verbose`.
+
+```text
+TestWacs:
+- verifies win-acme path is configured
+- verifies wacs.exe exists
+- records file name and file size
+- does not start renewal
+```
+
+`RenewWacs` performs the real win-acme renewal command:
+
+```powershell
+wacs.exe --renew --baseuri "https://acme-v02.api.letsencrypt.org/"
+```
+
+The Python subprocess wrapper captures output as bytes, merges stdout/stderr, and decodes safely to avoid Windows codepage errors.
 
 ## Repository layout
 
@@ -26,12 +99,14 @@ installer/
   Install-CertGuard-PA.ps1      # main installer and service wrapper
 src/
   certguard_agent.py            # raw Python worker source
+  certguard_windows_service.py  # pywin32 Windows Service host
   certguard_gui_qt.py           # primary PySide6 GUI
   certguard_gui.py              # legacy tkinter fallback
   certguard_eventlog.py         # Windows Event Log helper
   certguard_secrets.py          # DPAPI secret helper
 tools/
   Build-StandaloneRelease.ps1   # generates standalone installer into releases/
+  Apply-WacsSubprocessHotfix-v2.ps1 # idempotent WACS subprocess/path-test hotfix
 docs/
   OPERATIONS.md                 # setup and operations notes
   DEVELOPMENT.md                # build/development notes
@@ -53,6 +128,7 @@ Run from the repository root:
 
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force
+.\tools\Apply-WacsSubprocessHotfix-v2.ps1
 .\tools\Build-StandaloneRelease.ps1
 ```
 
@@ -113,12 +189,15 @@ Source: CertGuard-PA
 ## Current active workstream
 
 ```text
-Base: PA-LE Service v3.4-clean -> CertGuard-PA v1 baseline
+Base: PA-LE Service v3.4-clean -> CertGuard-PA v1 validated baseline
 Active workstream: feature/qt-gui-polish
 Protected areas:
 - Do not patch old generated zip packages as source.
-- Do not reintroduce pywin32 service model.
-- Keep sc.exe service creation.
+- Do not reintroduce direct sc.exe -> python script service-loop model.
+- Keep pywin32 ServiceFramework / pythonservice.exe Windows service model.
+- Keep WACS Test as path validation only.
+- Keep RenewWacs as real renewal action.
 - Keep DPAPI-backed secret storage.
 - Keep standalone build generated from repository source.
+- Preserve current logo/icon design.
 ```
