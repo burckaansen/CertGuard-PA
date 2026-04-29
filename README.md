@@ -1,8 +1,32 @@
 # CertGuard-PA
 
-Automated certificate lifecycle monitoring and deployment for Palo Alto Networks firewalls.
+<p align="center">
+  <img src="docs/assets/certguard-pa-logo.png" alt="CertGuard-PA logo" width="520">
+</p>
+
+<p align="center">
+  <strong>Automated certificate lifecycle monitoring and deployment for Palo Alto Networks firewalls.</strong>
+</p>
 
 CertGuard-PA is a Windows service package that monitors local win-acme PFX output, compares it with the certificate installed on Palo Alto, and imports the certificate only when policy conditions are met.
+
+## Branding
+
+The primary project logo is the premium chrome/silver shield-and-certificate design with the `CertGuard-PA` wordmark.
+
+Canonical asset path:
+
+```text
+docs/assets/certguard-pa-logo.png
+```
+
+Protected branding rules:
+
+- Preserve the current logo/icon design direction.
+- Keep the shield, certificate/document, checkmark/seal, and subtle circuit motifs.
+- Keep the premium silver/chrome style on dark background for README, splash, and documentation visuals.
+- Do not add third-party vendor logos or trademarks into the project logo.
+- For Windows application icons, derive `.ico` files from the approved logo/icon artwork.
 
 ## Current validated baseline
 
@@ -108,6 +132,7 @@ tools/
   Build-StandaloneRelease.ps1   # generates standalone installer into releases/
   Apply-WacsSubprocessHotfix-v2.ps1 # idempotent WACS subprocess/path-test hotfix
 docs/
+  BRANDING.md                   # logo and visual identity notes
   OPERATIONS.md                 # setup and operations notes
   DEVELOPMENT.md                # build/development notes
   V1_BASELINE_CHECKLIST.md      # protected baseline checklist
