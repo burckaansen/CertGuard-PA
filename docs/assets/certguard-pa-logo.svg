@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">CertGuard-PA Logo</title>
+  <desc id="desc">Premium chrome shield, certificate, checkmark, and circuit motif for CertGuard-PA.</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="75%">
+      <stop offset="0" stop-color="#1c2430"/>
+      <stop offset="0.55" stop-color="#0b1119"/>
+      <stop offset="1" stop-color="#030507"/>
+    </radialGradient>
+    <linearGradient id="chrome" x1="15%" y1="0%" x2="85%" y2="100%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.16" stop-color="#d8dde3"/>
+      <stop offset="0.33" stop-color="#707983"/>
+      <stop offset="0.50" stop-color="#f5f7fa"/>
+      <stop offset="0.68" stop-color="#9099a3"/>
+      <stop offset="0.86" stop-color="#e7ebef"/>
+      <stop offset="1" stop-color="#59636d"/>
+    </linearGradient>
+    <linearGradient id="darkPanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#18202b"/>
+      <stop offset="1" stop-color="#070a0f"/>
+    </linearGradient>
+    <linearGradient id="blueGlow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#56c7ff" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#b9ecff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#56c7ff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.42 0 0 0 0 0.78 0 0 0 0 1 0 0 0 0.8 0" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow" x="-35%" y="-35%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.75"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="760" fill="url(#bg)"/>
+  <circle cx="600" cy="270" r="250" fill="#79d9ff" opacity="0.08" filter="url(#softGlow)"/>
+
+  <g transform="translate(600 285)" filter="url(#shadow)">
+    <path d="M0 -230 C95 -170 170 -150 250 -136 L250 45 C244 164 141 250 0 318 C-141 250 -244 164 -250 45 L-250 -136 C-170 -150 -95 -170 0 -230 Z" fill="url(#chrome)"/>
+    <path d="M0 -190 C80 -141 147 -124 214 -112 L214 42 C208 141 120 214 0 273 C-120 214 -208 141 -214 42 L-214 -112 C-147 -124 -80 -141 0 -190 Z" fill="url(#darkPanel)" stroke="#9aa5af" stroke-width="4"/>
+    <path d="M0 -218 C91 -162 164 -142 239 -128" fill="none" stroke="#ffffff" stroke-width="6" opacity="0.65"/>
+    <path d="M-239 -128 C-165 -142 -91 -162 0 -218" fill="none" stroke="#eef7ff" stroke-width="4" opacity="0.45"/>
+
+    <g transform="translate(30 -82)">
+      <path d="M-88 -84 H62 L110 -36 V128 H-88 Z" fill="#111821" stroke="url(#chrome)" stroke-width="10" stroke-linejoin="round"/>
+      <path d="M62 -84 V-36 H110" fill="none" stroke="#eef2f6" stroke-width="9" stroke-linejoin="round"/>
+      <line x1="-44" y1="-32" x2="36" y2="-32" stroke="url(#chrome)" stroke-width="11" stroke-linecap="round"/>
+      <line x1="-44" y1="16" x2="80" y2="16" stroke="url(#chrome)" stroke-width="11" stroke-linecap="round"/>
+      <line x1="-44" y1="64" x2="28" y2="64" stroke="url(#chrome)" stroke-width="11" stroke-linecap="round"/>
+    </g>
+
+    <g transform="translate(96 72)">
+      <circle cx="0" cy="0" r="56" fill="#111821" stroke="url(#chrome)" stroke-width="12"/>
+      <path d="M-25 2 L-6 22 L32 -22" fill="none" stroke="#f4f7fb" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M-24 48 L-24 104 L0 88 L24 104 L24 48" fill="url(#chrome)" opacity="0.92"/>
+    </g>
+
+    <g stroke="url(#chrome)" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.95">
+      <path d="M-170 -58 V18 L-205 56 V132"/>
+      <path d="M-132 -10 V80 L-98 115 V176"/>
+      <path d="M-192 5 V91"/>
+      <path d="M-70 116 V202"/>
+      <path d="M-28 160 V220"/>
+      <circle cx="-170" cy="-58" r="13" fill="#18202b"/>
+      <circle cx="-132" cy="-10" r="13" fill="#18202b"/>
+      <circle cx="-205" cy="56" r="11" fill="#18202b"/>
+      <circle cx="-98" cy="115" r="11" fill="#18202b"/>
+      <circle cx="-192" cy="91" r="10" fill="#18202b"/>
+      <circle cx="-70" cy="116" r="12" fill="#18202b"/>
+      <circle cx="-28" cy="160" r="12" fill="#18202b"/>
+    </g>
+
+    <path d="M-245 45 C-238 156 -136 238 0 303 C136 238 238 156 245 45" fill="none" stroke="#8de4ff" stroke-width="3" opacity="0.8" filter="url(#softGlow)"/>
+  </g>
+
+  <text x="600" y="650" text-anchor="middle" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="92" font-weight="600" letter-spacing="1" fill="url(#chrome)" stroke="#f4f8ff" stroke-width="1.2" filter="url(#shadow)">CertGuard-PA</text>
+  <rect x="350" y="696" width="500" height="3" fill="url(#blueGlow)" opacity="0.85"/>
+</svg>
