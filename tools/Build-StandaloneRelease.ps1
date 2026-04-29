@@ -100,21 +100,39 @@ function Invoke-PythonChecked {
     }
 }
 
-function Test-PythonImport {
-    param([string]$ModuleName)
+function Invoke-PythonOptional {
+    param([string[]]$Arguments)
     $py = Get-PythonCommand
     $prefix = Get-PythonPrefix
     $oldEap = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        & $py @prefix -c "import $ModuleName" 1>$null 2>$null
-        $exitCode = $LASTEXITCODE
-        return ($exitCode -eq 0)
+        & $py @prefix @Arguments 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
     } finally {
         $ErrorActionPreference = $oldEap
     }
+}
+
+function Test-PythonImport {
+    param([string]$ModuleName)
+    return Invoke-PythonOptional @("-c", "import $ModuleName")
+}
+
+function Test-PythonServiceHost {
+    $py = Get-PythonCommand
+    if ($py -eq "python") {
+        try {
+            $pythonExe = (Get-Command python).Source
+            $pythonDir = Split-Path -Parent $pythonExe
+            return (Test-Path (Join-Path $pythonDir "pythonservice.exe"))
+        } catch {
+            return $false
+        }
+    }
+    return $true
 }
 
 function Ensure-Package {
@@ -137,10 +155,14 @@ function Ensure-Dependencies {
 function Ensure-ServiceDependencies {
     Ensure-Dependencies
     Ensure-Package "win32serviceutil" "pywin32"
-    try {
-        Invoke-PythonChecked @("-m", "pywin32_postinstall", "-install")
-    } catch {
-        Write-Warning "pywin32 postinstall failed or was not required: $($_.Exception.Message)"
+    if (Test-PythonServiceHost) {
+        Write-Host "[INFO] Python service host is available"
+        return
+    }
+    if (Invoke-PythonOptional @("-m", "pywin32_postinstall", "-install")) {
+        Write-Host "[INFO] pywin32 postinstall completed"
+    } else {
+        Write-Host "[INFO] pywin32 postinstall module not available; continuing because pywin32 imports are valid"
     }
 }
 
