@@ -53,6 +53,7 @@ Base: PA-LE Service v3.4-clean -> CertGuard-PA v1 validated baseline
 Active workstream: feature/qt-gui-polish
 Protected areas:
 - Do not patch old generated zip packages as source.
+- Do not rely on runtime/source patch scripts for normal release builds.
 - Do not reintroduce direct sc.exe -> python script service-loop model.
 - Keep pywin32 ServiceFramework / pythonservice.exe Windows service model.
 - Follow the Cloudflare-DDNS-Windows service pattern for Python Windows services.
@@ -163,7 +164,8 @@ Protected areas:
 - [x] `RenewWacs` runs the real renewal command: `wacs.exe --renew --baseuri ...`.
 - [x] Agent exposes `test-wacs` and `renew-wacs` commands.
 - [x] Installer exposes `TestWacs` and `RenewWacs` actions.
-- [x] Safe subprocess capture is used for WACS output: byte capture, stdout/stderr merge, safe decode.
+- [x] Safe subprocess capture is built directly into `src/certguard_agent.py`.
+- [x] No external hotfix/source patch script is required for normal builds.
 - [x] Policy can trigger win-acme renewal before deploy when local PFX is not newer.
 
 ## Logging
@@ -175,7 +177,9 @@ Protected areas:
 - [x] Events for service stop.
 - [x] Events for health check success/failure.
 - [x] Events for certificate checked.
-- [x] Events for no import needed / deploy skipped.
+- [x] Events for comparison summary.
+- [x] Events for no certificate change required.
+- [x] Events for certificate import required.
 - [x] Events for import needed / deploy attempt.
 - [x] Events for import success.
 - [x] Events for import failure.
@@ -203,6 +207,7 @@ Protected areas:
 ## Packaging
 
 - [x] Build script creates distributable standalone installer package from source.
+- [x] Build script is the only required release generation step.
 - [x] Standalone installer embeds Python runtime files as Base64.
 - [x] Standalone installer includes backend, pywin32 service host, Qt GUI, legacy GUI, event log module and secrets module.
 - [x] Standalone installer can deploy embedded files into ProgramData.
@@ -218,6 +223,7 @@ Protected areas:
 - Service layer: complete and Windows validated for v1 baseline.
 - Installer: complete and Windows validated for v1 baseline.
 - Standalone builder: complete for v1 baseline.
+- Build flow: normalized; no external hotfix/source patch script required.
 - Branding: primary logo and branding guide are present.
 - Qt GUI: functional, approximately 85-90 percent complete; polish remains.
 
