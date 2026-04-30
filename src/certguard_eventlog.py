@@ -12,12 +12,52 @@ EVENT_INFO = "INFORMATION"
 EVENT_WARN = "WARNING"
 EVENT_ERROR = "ERROR"
 
+# Clean v1 event ID blocks:
+# 100-199 service
+# 200-299 health/API
+# 300-399 certificate/policy
+# 400-499 deploy/commit
+# 500-599 win-acme
+# 900-999 command/error/debug
+LEGACY_TO_V1_EVENT_ID = {
+    300: 100,  # service started/stopped
+    301: 110,  # service tick executed
+    302: 111,  # policy tick completed
+    303: 901,  # policy tick failed
+    304: 902,  # service loop error
+    305: 201,  # health failed
+    306: 200,  # health ok
+    310: 300,  # local PFX inspected
+    320: 210,  # Palo Alto API connected
+    330: 302,  # cert not found on PA
+    331: 301,  # PA certificate inspected
+    340: 310,  # compare completed
+    341: 311,  # comparison summary
+    350: 320,  # policy decision
+    351: 321,  # no change / deploy skipped
+    352: 400,  # deployment attempt
+    353: 322,  # import required
+    354: 323,  # scheduled tick import required
+    360: 401,  # import completed
+    361: 402,  # deployment completed
+    362: 403,  # deployment attempt failed
+    370: 404,  # commit submitted
+    380: 501,  # win-acme renewal started
+    381: 503,  # win-acme renewal failed
+    382: 502,  # win-acme renewal completed
+    383: 500,  # win-acme path test completed
+    390: 910,  # debug mode
+    398: 900,  # file not found
+    399: 901,  # command failed / unexpected failure
+}
+
 
 def normalize_event_id(event_id):
     try:
         value = int(event_id)
     except Exception:
         value = 900
+    value = LEGACY_TO_V1_EVENT_ID.get(value, value)
     if value < 1 or value > 1000:
         return 900
     return value
