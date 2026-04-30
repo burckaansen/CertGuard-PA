@@ -20,6 +20,7 @@ Service     OK - RUNNING
 Startup     AUTO_START
 Host        pythonservice.exe via pywin32
 Policy      OK - skip when Palo Alto certificate is above threshold
+Event Log   OK - pywin32 servicemanager model, CloudDNS-aligned
 ```
 
 Expected Windows service configuration:
@@ -57,6 +58,8 @@ Protected areas:
 - Do not reintroduce direct sc.exe -> python script service-loop model.
 - Keep pywin32 ServiceFramework / pythonservice.exe Windows service model.
 - Follow the Cloudflare-DDNS-Windows service pattern for Python Windows services.
+- Keep Windows Event Log writing aligned with pywin32 servicemanager model.
+- Do not reintroduce Write-EventLog, eventcreate, or custom EventMessageFile registry mapping.
 - Keep WACS Test as path/file validation only.
 - Keep RenewWacs as the real win-acme renewal action.
 - Keep DPAPI-backed secret storage.
@@ -172,7 +175,12 @@ Protected areas:
 
 - [x] File log under `C:\ProgramData\CertGuard-PA\logs`.
 - [x] Windows Application Event Log integration in agent runtime.
-- [x] Event log source registration from installer.
+- [x] Windows Event Log writer uses pywin32 `servicemanager`, aligned with Cloudflare-DDNS-Windows.
+- [x] Windows Event Log messages include `[CertGuard-PA]` prefix.
+- [x] Windows Event Log messages include structured `EVENT=<name>` details.
+- [x] No `Write-EventLog` runtime writer.
+- [x] No `eventcreate` runtime writer.
+- [x] No custom `EventMessageFile` registry mapping.
 - [x] Events for service start.
 - [x] Events for service stop.
 - [x] Events for health check success/failure.
@@ -202,7 +210,7 @@ Protected areas:
 - [x] Uninstall asks whether to remove ProgramData.
 - [x] Options include remove everything, keep config/state and remove runtime files, remove logs only, or keep everything.
 - [x] Option exists to keep config/state while removing runtime files.
-- [~] Deletion-pending Windows service state may require reboot before reinstall; this is a Windows SCM behavior and should be mentioned in operations notes.
+- [x] Deletion-pending Windows service state is documented in operations notes.
 
 ## Packaging
 
@@ -214,7 +222,7 @@ Protected areas:
 - [x] Standalone action set matches the main installer action set.
 - [x] README matches current baseline and release flow.
 - [x] Branding documentation exists.
-- [ ] Operations document should be refreshed to include pywin32 service model, deletion-pending service cleanup, TestWacs behavior and release validation commands.
+- [x] Operations document matches final service/WACS/Event Log/release behavior.
 - [ ] Versioned standalone release file should be generated and hashed before publishing.
 
 ## Current repository status
@@ -224,17 +232,17 @@ Protected areas:
 - Installer: complete and Windows validated for v1 baseline.
 - Standalone builder: complete for v1 baseline.
 - Build flow: normalized; no external hotfix/source patch script required.
+- Event Log: complete and aligned with CloudDNS pywin32 servicemanager model.
 - Branding: primary logo and branding guide are present.
 - Qt GUI: functional, approximately 85-90 percent complete; polish remains.
 
 ## Open items before v1.0 release
 
-1. Refresh `docs/OPERATIONS.md` to match final service/WACS/release behavior.
-2. Generate versioned standalone release file:
+1. Generate versioned standalone release file:
    - `releases/CertGuard-PA-v1.0.0-Standalone.ps1`
-3. Record SHA256 hash of the versioned release file.
-4. Optional: export PNG logo render to `docs/assets/certguard-pa-logo.png`.
-5. Optional GUI polish items can move to post-v1:
+2. Record SHA256 hash of the versioned release file.
+3. Optional: export PNG logo render to `docs/assets/certguard-pa-logo.png`.
+4. Optional GUI polish items can move to post-v1:
    - dashboard auto-refresh
    - live service status polling
    - visible progress indicator
