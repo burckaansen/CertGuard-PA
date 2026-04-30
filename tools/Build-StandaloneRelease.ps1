@@ -57,7 +57,6 @@ $Gui = Join-Path $InstallDir "certguard_gui_qt.py"
 $GuiLegacy = Join-Path $InstallDir "certguard_gui.py"
 $ServiceHost = Join-Path $InstallDir "certguard_windows_service.py"
 $RuntimeInstaller = Join-Path $InstallDir "Install-CertGuard-PA.ps1"
-$EventSource = "CertGuard-PA"
 
 $EmbeddedFiles = @{
     "certguard_agent.py" = "__AGENT_B64__"
@@ -172,18 +171,10 @@ function Ensure-GuiDependencies {
 }
 
 function Ensure-EventSource {
-    try {
-        $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$EventSource"
-        if (-not (Test-Path $eventKey)) {
-            New-Item -Path $eventKey -Force | Out-Null
-            Write-Host "[INFO] Event Log source registered: $EventSource"
-        }
-        New-ItemProperty -Path $eventKey -Name "EventMessageFile" -Value "%SystemRoot%\System32\EventCreate.exe" -PropertyType ExpandString -Force | Out-Null
-        New-ItemProperty -Path $eventKey -Name "TypesSupported" -Value 7 -PropertyType DWord -Force | Out-Null
-        Write-Host "[INFO] Event Log source mapping repaired: $EventSource"
-    } catch {
-        Write-Warning "Event source registration failed: $($_.Exception.Message)"
-    }
+    # CertGuard-PA runtime events follow the Cloudflare-DDNS-Windows pattern:
+    # pywin32 servicemanager writes Windows Application events and owns the message resource behavior.
+    # Do not register or modify a custom EventMessageFile mapping here.
+    Write-Host "[INFO] Event Log handled by pywin32 servicemanager"
 }
 
 function Write-EmbeddedFile {
