@@ -1,25 +1,11 @@
 # ASCII only
 
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 APP_SOURCE = "CertGuard-PA"
 BASE_DIR = Path(r"C:\ProgramData\CertGuard-PA")
 EVENTLOG_ERROR_PATH = BASE_DIR / "logs" / "certguard-pa-eventlog-error.log"
-
-# Final v1 Windows Event Log model:
-# Source stays CertGuard-PA.
-# Event IDs are severity based to avoid a large custom message table.
-# 100 = Information
-# 200 = Warning
-# 300 = Error
-SEVERITY_EVENT_IDS = {
-    "INFO": 100,
-    "WARN": 200,
-    "WARNING": 200,
-    "ERROR": 300,
-}
 
 EVENT_NAMES = {
     300: "ServiceLifecycle",
@@ -58,19 +44,6 @@ def normalize_level(level):
     return str(level or "INFO").upper()
 
 
-def severity_event_id(level):
-    return SEVERITY_EVENT_IDS.get(normalize_level(level), 100)
-
-
-def entry_type_for_powershell(level):
-    return {
-        "INFO": "Information",
-        "WARN": "Warning",
-        "WARNING": "Warning",
-        "ERROR": "Error",
-    }.get(normalize_level(level), "Information")
-
-
 def event_name(original_event_id):
     try:
         value = int(original_event_id)
@@ -80,10 +53,9 @@ def event_name(original_event_id):
 
 
 def safe_message_text(message, level="INFO", original_event_id=0):
-    name = event_name(original_event_id)
     status = "ERROR" if normalize_level(level) == "ERROR" else ("WARN" if normalize_level(level) in ["WARN", "WARNING"] else "OK")
-    safe_message = f"[{APP_SOURCE}] EVENT={name} STATUS={status} ORIGINAL_EVENT_ID={original_event_id} MESSAGE={message}"
-    return safe_message.replace("\r", " ").replace("\n", " ")[:1200]
+    text = f"[{APP_SOURCE}] EVENT={event_name(original_event_id)} STATUS={status} ORIGINAL_EVENT_ID={original_event_id} MESSAGE={message}"
+    return text.replace("\r", " ").replace("\n", " ")[:1200]
 
 
 def write_eventlog_error(message):
@@ -96,31 +68,16 @@ def write_eventlog_error(message):
         pass
 
 
-def write_event_powershell(message, level="INFO", event_id=399):
-    final_event_id = severity_event_id(level)
-    entry_type = entry_type_for_powershell(level)
-    safe_message = safe_message_text(message, level, event_id)
-    script = (
-        "$msg = [Console]::In.ReadToEnd(); "
-        f"Write-EventLog -LogName Application -Source '{APP_SOURCE}' -EventId {final_event_id} "
-        f"-EntryType {entry_type} -Message $msg"
-    )
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        input=safe_message,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Write-EventLog failed returncode={result.returncode} output={result.stdout[-500:]}")
-
-
 def write_event(message, level="INFO", event_id=399):
     try:
-        write_event_powershell(message, level, event_id)
+        import servicemanager
+        text = safe_message_text(message, level, event_id)
+        normalized = normalize_level(level)
+        if normalized == "ERROR":
+            servicemanager.LogErrorMsg(text)
+        elif normalized in ["WARN", "WARNING"]:
+            servicemanager.LogWarningMsg(text)
+        else:
+            servicemanager.LogInfoMsg(text)
     except Exception as exc:
-        write_eventlog_error(f"Write-EventLog failed event_id={event_id} level={level}: {exc}")
+        write_eventlog_error(f"servicemanager event log failed event_id={event_id} level={level}: {exc}")
