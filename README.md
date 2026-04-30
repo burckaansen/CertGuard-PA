@@ -8,7 +8,28 @@
   <strong>Automated certificate lifecycle monitoring and deployment for Palo Alto Networks firewalls.</strong>
 </p>
 
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-blue">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-lightgrey">
+  <img alt="Runtime" src="https://img.shields.io/badge/python-3.x-blue">
+  <img alt="Service" src="https://img.shields.io/badge/service-pywin32%20pythonservice.exe-success">
+  <img alt="Release" src="https://img.shields.io/badge/release-standalone%20PowerShell-informational">
+  <img alt="Status" src="https://img.shields.io/badge/status-validated%20baseline-success">
+</p>
+
 CertGuard-PA is a Windows service package that monitors local win-acme PFX output, compares it with the certificate installed on Palo Alto, and imports the certificate only when policy conditions are met.
+
+## Release identity
+
+```text
+Product      : CertGuard-PA
+Version      : 1.0.0
+Platform     : Windows Server / Windows 10 / Windows 11
+Runtime      : Python 3.x
+Service host : pywin32 pythonservice.exe
+Release type : Standalone PowerShell installer
+Status       : Validated baseline
+```
 
 ## Branding
 
@@ -46,6 +67,7 @@ Service     OK - RUNNING
 Startup     AUTO_START
 Host        pythonservice.exe via pywin32
 Policy      OK - skip when Palo Alto certificate is above threshold
+Event Log   OK - pywin32 servicemanager model, CloudDNS-aligned
 ```
 
 ## Baseline
@@ -140,7 +162,10 @@ docs/
   BRANDING.md                   # logo and visual identity notes
   OPERATIONS.md                 # setup and operations notes
   DEVELOPMENT.md                # build/development notes
+  RELEASE_NOTES_v1.0.0.md       # v1.0.0 release notes
   V1_BASELINE_CHECKLIST.md      # protected baseline checklist
+VERSION                         # current project version
+CHANGELOG.md                    # release history
 ```
 
 ## Quick install
@@ -174,6 +199,25 @@ Run it as Administrator:
 ```
 
 Important: if `tools/Build-StandaloneRelease.ps1` changes, regenerate the standalone file. Do not keep using an older generated standalone script.
+
+## Release artifact
+
+Recommended v1.0.0 release artifact:
+
+```text
+releases\CertGuard-PA-v1.0.0-Standalone.ps1
+```
+
+Generate after building:
+
+```powershell
+Copy-Item `
+  ".\releases\Install-CertGuard-PA-Standalone.ps1" `
+  ".\releases\CertGuard-PA-v1.0.0-Standalone.ps1" `
+  -Force
+
+Get-FileHash ".\releases\CertGuard-PA-v1.0.0-Standalone.ps1" -Algorithm SHA256
+```
 
 ## Useful actions
 
@@ -210,9 +254,21 @@ Secrets are stored with Windows DPAPI machine scope.
 
 ## Windows Event Log
 
+CertGuard-PA follows the Cloudflare-DDNS-Windows pywin32 `servicemanager` model.
+
 ```text
 Windows Logs > Application
-Source: CertGuard-PA
+Message prefix: [CertGuard-PA]
+Structured detail: EVENT=<name>
+```
+
+Recommended query:
+
+```powershell
+Get-EventLog -LogName Application -Newest 50 |
+  Where-Object { $_.Message -like "*[CertGuard-PA]*" } |
+  Select-Object TimeGenerated, Source, EntryType, EventID, Message |
+  Format-List
 ```
 
 ## Current active workstream
@@ -224,6 +280,7 @@ Protected areas:
 - Do not patch old generated zip packages as source.
 - Do not reintroduce direct sc.exe -> python script service-loop model.
 - Keep pywin32 ServiceFramework / pythonservice.exe Windows service model.
+- Keep Windows Event Log writing aligned with pywin32 servicemanager model.
 - Keep WACS Test as path validation only.
 - Keep RenewWacs as real renewal action.
 - Keep DPAPI-backed secret storage.
