@@ -136,7 +136,6 @@ src/
   certguard_secrets.py          # DPAPI secret helper
 tools/
   Build-StandaloneRelease.ps1   # generates standalone installer into releases/
-  Apply-WacsSubprocessHotfix-v2.ps1 # idempotent WACS subprocess/path-test hotfix
 docs/
   BRANDING.md                   # logo and visual identity notes
   OPERATIONS.md                 # setup and operations notes
@@ -159,7 +158,6 @@ Run from the repository root:
 
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force
-.\tools\Apply-WacsSubprocessHotfix-v2.ps1
 .\tools\Build-StandaloneRelease.ps1
 ```
 
