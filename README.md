@@ -14,6 +14,7 @@
   <img alt="Runtime" src="https://img.shields.io/badge/python-3.x-blue">
   <img alt="Service" src="https://img.shields.io/badge/service-pywin32%20pythonservice.exe-success">
   <img alt="Release" src="https://img.shields.io/badge/release-standalone%20PowerShell-informational">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Status" src="https://img.shields.io/badge/status-validated%20baseline-success">
 </p>
 
@@ -28,6 +29,7 @@ Platform     : Windows Server / Windows 10 / Windows 11
 Runtime      : Python 3.x
 Service host : pywin32 pythonservice.exe
 Release type : Standalone PowerShell installer
+License      : MIT
 Status       : Validated baseline
 ```
 
@@ -166,6 +168,7 @@ docs/
   V1_BASELINE_CHECKLIST.md      # protected baseline checklist
 VERSION                         # current project version
 CHANGELOG.md                    # release history
+LICENSE                         # MIT license
 ```
 
 ## Quick install
