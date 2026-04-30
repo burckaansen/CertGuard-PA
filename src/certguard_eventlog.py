@@ -20,35 +20,35 @@ EVENT_ERROR = "ERROR"
 # 500-599 win-acme
 # 900-999 command/error/debug
 LEGACY_TO_V1_EVENT_ID = {
-    300: 100,  # service started/stopped
-    301: 110,  # service tick executed
-    302: 111,  # policy tick completed
-    303: 901,  # policy tick failed
-    304: 902,  # service loop error
-    305: 201,  # health failed
-    306: 200,  # health ok
-    310: 300,  # local PFX inspected
-    320: 210,  # Palo Alto API connected
-    330: 302,  # cert not found on PA
-    331: 301,  # PA certificate inspected
-    340: 310,  # compare completed
-    341: 311,  # comparison summary
-    350: 320,  # policy decision
-    351: 321,  # no change / deploy skipped
-    352: 400,  # deployment attempt
-    353: 322,  # import required
-    354: 323,  # scheduled tick import required
-    360: 401,  # import completed
-    361: 402,  # deployment completed
-    362: 403,  # deployment attempt failed
-    370: 404,  # commit submitted
-    380: 501,  # win-acme renewal started
-    381: 503,  # win-acme renewal failed
-    382: 502,  # win-acme renewal completed
-    383: 500,  # win-acme path test completed
-    390: 910,  # debug mode
-    398: 900,  # file not found
-    399: 901,  # command failed / unexpected failure
+    300: 100,
+    301: 110,
+    302: 111,
+    303: 901,
+    304: 902,
+    305: 201,
+    306: 200,
+    310: 300,
+    320: 210,
+    330: 302,
+    331: 301,
+    340: 310,
+    341: 311,
+    350: 320,
+    351: 321,
+    352: 400,
+    353: 322,
+    354: 323,
+    360: 401,
+    361: 402,
+    362: 403,
+    370: 404,
+    380: 501,
+    381: 503,
+    382: 502,
+    383: 500,
+    390: 910,
+    398: 900,
+    399: 901,
 }
 
 
@@ -82,22 +82,55 @@ def write_eventlog_error(message):
         pass
 
 
-def write_event_eventcreate(message, level="INFO", event_id=900):
-    event_type = {
+def entry_type_for_powershell(level):
+    return {
+        "INFO": "Information",
+        "WARN": "Warning",
+        "WARNING": "Warning",
+        "ERROR": "Error",
+    }.get(normalize_level(level), "Information")
+
+
+def event_type_for_eventcreate(level):
+    return {
         "INFO": EVENT_INFO,
         "WARN": EVENT_WARN,
         "WARNING": EVENT_WARN,
         "ERROR": EVENT_ERROR,
     }.get(normalize_level(level), EVENT_INFO)
 
+
+def write_event_powershell(message, level="INFO", event_id=900):
     safe_message = safe_message_text(message)
     event_id = normalize_event_id(event_id)
+    entry_type = entry_type_for_powershell(level)
+    script = (
+        "$msg = [Console]::In.ReadToEnd(); "
+        f"Write-EventLog -LogName Application -Source '{APP_SOURCE}' -EventId {event_id} "
+        f"-EntryType {entry_type} -Message $msg"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        input=safe_message,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Write-EventLog failed returncode={result.returncode} output={result.stdout[-500:]}")
 
+
+def write_event_eventcreate(message, level="INFO", event_id=900):
+    safe_message = safe_message_text(message)
+    event_id = normalize_event_id(event_id)
     result = subprocess.run(
         [
             "eventcreate",
             "/L", "APPLICATION",
-            "/T", event_type,
+            "/T", event_type_for_eventcreate(level),
             "/ID", str(event_id),
             "/SO", APP_SOURCE,
             "/D", safe_message,
@@ -119,15 +152,12 @@ def write_event_pywin32(message, level="INFO", event_id=900):
         import win32evtlog
     except Exception as exc:
         raise RuntimeError(f"pywin32 event log modules unavailable: {exc}") from exc
-
-    level = normalize_level(level)
     event_type = {
         "INFO": win32evtlog.EVENTLOG_INFORMATION_TYPE,
         "WARN": win32evtlog.EVENTLOG_WARNING_TYPE,
         "WARNING": win32evtlog.EVENTLOG_WARNING_TYPE,
         "ERROR": win32evtlog.EVENTLOG_ERROR_TYPE,
-    }.get(level, win32evtlog.EVENTLOG_INFORMATION_TYPE)
-
+    }.get(normalize_level(level), win32evtlog.EVENTLOG_INFORMATION_TYPE)
     win32evtlogutil.ReportEvent(
         APP_SOURCE,
         normalize_event_id(event_id),
@@ -139,13 +169,18 @@ def write_event_pywin32(message, level="INFO", event_id=900):
 
 
 def write_event(message, level="INFO", event_id=900):
-    # Prefer eventcreate because the installer maps the CertGuard-PA source
-    # to EventCreate.exe, which supports simple custom Event IDs 1-1000.
+    # Preferred path: PowerShell Write-EventLog with a New-EventLog registered source.
+    try:
+        write_event_powershell(message, level, event_id)
+        return
+    except Exception as exc:
+        write_eventlog_error(f"Write-EventLog failed event_id={event_id} level={level}: {exc}")
+
     try:
         write_event_eventcreate(message, level, event_id)
         return
     except Exception as exc:
-        write_eventlog_error(f"eventcreate failed event_id={event_id} level={level}: {exc}")
+        write_eventlog_error(f"eventcreate fallback failed event_id={event_id} level={level}: {exc}")
 
     try:
         write_event_pywin32(message, level, event_id)
