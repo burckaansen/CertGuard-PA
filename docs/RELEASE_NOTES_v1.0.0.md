@@ -23,7 +23,7 @@ releases\CertGuard-PA-v1.0.0-Standalone.ps1
 SHA256:
 
 ```text
-PENDING - generate after final standalone release file is produced
+8FB6B2ED66720ED24EFF9876FBF19AF780AE7FF9A3EB5E48561B8FA3E2EE3149
 ```
 
 ## What is included
