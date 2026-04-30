@@ -8,10 +8,6 @@ APP_SOURCE = "CertGuard-PA"
 BASE_DIR = Path(r"C:\ProgramData\CertGuard-PA")
 EVENTLOG_ERROR_PATH = BASE_DIR / "logs" / "certguard-pa-eventlog-error.log"
 
-EVENT_INFO = "INFORMATION"
-EVENT_WARN = "WARNING"
-EVENT_ERROR = "ERROR"
-
 # Clean v1 event ID blocks:
 # 100-199 service
 # 200-299 health/API
@@ -91,15 +87,6 @@ def entry_type_for_powershell(level):
     }.get(normalize_level(level), "Information")
 
 
-def event_type_for_eventcreate(level):
-    return {
-        "INFO": EVENT_INFO,
-        "WARN": EVENT_WARN,
-        "WARNING": EVENT_WARN,
-        "ERROR": EVENT_ERROR,
-    }.get(normalize_level(level), EVENT_INFO)
-
-
 def write_event_powershell(message, level="INFO", event_id=900):
     safe_message = safe_message_text(message)
     event_id = normalize_event_id(event_id)
@@ -123,67 +110,8 @@ def write_event_powershell(message, level="INFO", event_id=900):
         raise RuntimeError(f"Write-EventLog failed returncode={result.returncode} output={result.stdout[-500:]}")
 
 
-def write_event_eventcreate(message, level="INFO", event_id=900):
-    safe_message = safe_message_text(message)
-    event_id = normalize_event_id(event_id)
-    result = subprocess.run(
-        [
-            "eventcreate",
-            "/L", "APPLICATION",
-            "/T", event_type_for_eventcreate(level),
-            "/ID", str(event_id),
-            "/SO", APP_SOURCE,
-            "/D", safe_message,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"eventcreate failed returncode={result.returncode} output={result.stdout[-500:]}")
-
-
-def write_event_pywin32(message, level="INFO", event_id=900):
-    try:
-        import win32evtlogutil
-        import win32evtlog
-    except Exception as exc:
-        raise RuntimeError(f"pywin32 event log modules unavailable: {exc}") from exc
-    event_type = {
-        "INFO": win32evtlog.EVENTLOG_INFORMATION_TYPE,
-        "WARN": win32evtlog.EVENTLOG_WARNING_TYPE,
-        "WARNING": win32evtlog.EVENTLOG_WARNING_TYPE,
-        "ERROR": win32evtlog.EVENTLOG_ERROR_TYPE,
-    }.get(normalize_level(level), win32evtlog.EVENTLOG_INFORMATION_TYPE)
-    win32evtlogutil.ReportEvent(
-        APP_SOURCE,
-        normalize_event_id(event_id),
-        eventCategory=0,
-        eventType=event_type,
-        strings=[safe_message_text(message)],
-        data=b"",
-    )
-
-
 def write_event(message, level="INFO", event_id=900):
-    # Preferred path: PowerShell Write-EventLog with a New-EventLog registered source.
     try:
         write_event_powershell(message, level, event_id)
-        return
     except Exception as exc:
         write_eventlog_error(f"Write-EventLog failed event_id={event_id} level={level}: {exc}")
-
-    try:
-        write_event_eventcreate(message, level, event_id)
-        return
-    except Exception as exc:
-        write_eventlog_error(f"eventcreate fallback failed event_id={event_id} level={level}: {exc}")
-
-    try:
-        write_event_pywin32(message, level, event_id)
-        return
-    except Exception as exc:
-        write_eventlog_error(f"pywin32 fallback failed event_id={event_id} level={level}: {exc}")
