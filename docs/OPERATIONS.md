@@ -14,6 +14,7 @@ Service     OK - RUNNING
 Startup     AUTO_START
 Host        pythonservice.exe via pywin32
 Policy      OK - skip when Palo Alto certificate is above threshold
+Event Log   OK - pywin32 servicemanager model, CloudDNS-aligned
 ```
 
 ## Palo Alto API key
@@ -212,70 +213,60 @@ WACS output is captured as bytes, stdout/stderr are merged, and output is decode
 C:\ProgramData\CertGuard-PA\config.json
 C:\ProgramData\CertGuard-PA\state.json
 C:\ProgramData\CertGuard-PA\logs\certguard-pa.log
+C:\ProgramData\CertGuard-PA\logs\certguard-pa-eventlog-error.log
 ```
 
 Secrets are protected with Windows DPAPI machine scope when saved through the GUI.
 
 ## Windows Event Log
 
+Final v1 Event Log model is aligned with the working Cloudflare-DDNS-Windows project.
+
 ```text
 Windows Logs > Application
-Source: CertGuard-PA
+Writer: pywin32 servicemanager
+Message prefix: [CertGuard-PA]
+Detailed event name: EVENT=<name>
 ```
 
-Quick query:
-
-```powershell
-Get-EventLog -LogName Application -Source CertGuard-PA -Newest 50 |
-  Select-Object TimeGenerated, EntryType, EventID, Message |
-  Format-List
-```
-
-Event ID map:
+CertGuard-PA does not use these anymore:
 
 ```text
-300  INFO   Service started / stopped / stop requested
-301  INFO   Service tick executed
-302  INFO   Policy tick completed
-303  ERROR  Policy tick failed
-304  ERROR  Service loop error
-305  ERROR  Health check failed
-306  INFO   Health check completed successfully
-310  INFO   Local PFX inspected
-320  INFO   Palo Alto API connected
-330  WARN   Certificate not found on Palo Alto
-331  INFO   Palo Alto certificate inspected
-340  INFO   Compare completed
-341  INFO   Certificate comparison summary
-350  INFO/WARN Policy decision
-351  INFO   No certificate change required / deploy skipped
-352  WARN   Deployment attempt
-353  WARN   Certificate import required
-354  WARN   Certificate import required by scheduled service tick
-360  INFO   Certificate import completed
-361  INFO   Deployment completed successfully
-362  ERROR  Deployment attempt failed
-370  INFO   Commit request submitted
-380  WARN   win-acme fallback renewal started
-381  ERROR  win-acme fallback renewal failed
-382  INFO   win-acme fallback renewal completed successfully
-383  INFO   win-acme path test completed
-390  INFO   Debug mode
-398  ERROR  File not found
-399  ERROR  Command failed / unexpected failure
+Write-EventLog
+EventCreate.exe
+eventcreate CLI
+custom EventMessageFile registry mapping
+custom Windows message DLL
+```
+
+Recommended query:
+
+```powershell
+Get-EventLog -LogName Application -Newest 50 |
+  Where-Object { $_.Message -like "*[CertGuard-PA]*" } |
+  Select-Object TimeGenerated, Source, EntryType, EventID, Message |
+  Format-List
 ```
 
 Typical no-change event:
 
 ```text
-[CertGuard-PA] No certificate change required: Palo Alto certificate has 155 days left; threshold is 7
+[CertGuard-PA] EVENT=NoCertificateChangeRequired STATUS=OK ORIGINAL_EVENT_ID=351 MESSAGE=No certificate change required: Palo Alto certificate has 155 days left; threshold is 7
+```
+
+Typical certificate comparison event:
+
+```text
+[CertGuard-PA] EVENT=CertificateComparisonSummary STATUS=OK ORIGINAL_EVENT_ID=341 MESSAGE=Certificate comparison summary: local_days_left=83 remote_days_left=155 remote_found=True same_fingerprint=False
 ```
 
 Typical import-required event:
 
 ```text
-[CertGuard-PA] Certificate import required: Palo Alto certificate is missing and first import is enabled
+[CertGuard-PA] EVENT=CertificateImportRequired STATUS=WARN ORIGINAL_EVENT_ID=353 MESSAGE=Certificate import required: Palo Alto certificate is missing and first import is enabled
 ```
+
+The detailed operational event name is carried in the message instead of relying on custom Windows Event IDs. The file log remains the authoritative detailed runtime log.
 
 ## Service deletion-pending state
 
