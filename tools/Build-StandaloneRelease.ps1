@@ -173,10 +173,14 @@ function Ensure-GuiDependencies {
 
 function Ensure-EventSource {
     try {
-        if (-not [System.Diagnostics.EventLog]::SourceExists($EventSource)) {
-            New-EventLog -LogName Application -Source $EventSource
+        $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$EventSource"
+        if (-not (Test-Path $eventKey)) {
+            New-Item -Path $eventKey -Force | Out-Null
             Write-Host "[INFO] Event Log source registered: $EventSource"
         }
+        New-ItemProperty -Path $eventKey -Name "EventMessageFile" -Value "%SystemRoot%\System32\EventCreate.exe" -PropertyType ExpandString -Force | Out-Null
+        New-ItemProperty -Path $eventKey -Name "TypesSupported" -Value 7 -PropertyType DWord -Force | Out-Null
+        Write-Host "[INFO] Event Log source mapping repaired: $EventSource"
     } catch {
         Write-Warning "Event source registration failed: $($_.Exception.Message)"
     }
@@ -314,30 +318,32 @@ switch ($Action) {
     "InstallSilent" { Install-Service }
     "Repair" { Install-Service }
     "Uninstall" { Uninstall-App }
-    "Start" { Deploy-Files; Ensure-ServiceDependencies; Invoke-PythonChecked @($ServiceHost, "start") }
+    "Start" { Deploy-Files; Ensure-ServiceDependencies; Ensure-EventSource; Invoke-PythonChecked @($ServiceHost, "start") }
     "Stop" { Deploy-Files; Ensure-ServiceDependencies; Invoke-PythonChecked @($ServiceHost, "stop") }
-    "Restart" { Deploy-Files; Ensure-ServiceDependencies; Invoke-PythonChecked @($ServiceHost, "restart") }
+    "Restart" { Deploy-Files; Ensure-ServiceDependencies; Ensure-EventSource; Invoke-PythonChecked @($ServiceHost, "restart") }
     "Status" { Show-Status }
     "Gui" {
         Deploy-Files
         Ensure-GuiDependencies
+        Ensure-EventSource
         Invoke-PythonChecked @($Gui)
     }
     "GuiLegacy" {
         Deploy-Files
         Ensure-Dependencies
+        Ensure-EventSource
         Invoke-PythonChecked @($GuiLegacy)
     }
-    "Debug" { Invoke-Agent "debug" }
-    "Deploy" { Invoke-Agent "deploy" }
-    "ForceDeploy" { Invoke-Agent "force-deploy" }
-    "Policy" { Invoke-Agent "policy" }
-    "Compare" { Invoke-Agent "compare" }
-    "InspectPfx" { Invoke-Agent "inspect-pfx" }
-    "TestApi" { Invoke-Agent "test-pa" }
-    "TestWacs" { Invoke-Agent "test-wacs" }
-    "RenewWacs" { Invoke-Agent "renew-wacs" }
-    "Health" { Invoke-Agent "health" }
+    "Debug" { Ensure-EventSource; Invoke-Agent "debug" }
+    "Deploy" { Ensure-EventSource; Invoke-Agent "deploy" }
+    "ForceDeploy" { Ensure-EventSource; Invoke-Agent "force-deploy" }
+    "Policy" { Ensure-EventSource; Invoke-Agent "policy" }
+    "Compare" { Ensure-EventSource; Invoke-Agent "compare" }
+    "InspectPfx" { Ensure-EventSource; Invoke-Agent "inspect-pfx" }
+    "TestApi" { Ensure-EventSource; Invoke-Agent "test-pa" }
+    "TestWacs" { Ensure-EventSource; Invoke-Agent "test-wacs" }
+    "RenewWacs" { Ensure-EventSource; Invoke-Agent "renew-wacs" }
+    "Health" { Ensure-EventSource; Invoke-Agent "health" }
 }
 '@
 
