@@ -1,6 +1,5 @@
 # ASCII only
 
-import servicemanager
 import win32event
 import win32service
 import win32serviceutil
@@ -16,7 +15,7 @@ def log_info(message):
         from certguard_agent import log
         log(message, "INFO", 300)
     except Exception:
-        servicemanager.LogInfoMsg(f"[CertGuard-PA] {message}")
+        pass
 
 
 def log_error(message):
@@ -24,7 +23,7 @@ def log_error(message):
         from certguard_agent import log
         log(message, "ERROR", 304)
     except Exception:
-        servicemanager.LogErrorMsg(f"[CertGuard-PA] {message}")
+        pass
 
 
 class CertGuardPAService(win32serviceutil.ServiceFramework):
@@ -44,11 +43,6 @@ class CertGuardPAService(win32serviceutil.ServiceFramework):
         log_info("Service stop requested")
 
     def SvcDoRun(self):
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, ""),
-        )
         log_info("Service started")
         self.main_loop()
 
