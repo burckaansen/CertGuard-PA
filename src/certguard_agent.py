@@ -383,32 +383,120 @@ def test_palo_api():
 
 def extract_first(patterns, text):
     for pattern in patterns:
-        match = pattern.search(text)
+        match = pattern.search(text or "")
         if match:
             return match.group(1).strip()
     return ""
 
 
-def find_pa_cert_block(xml_text, certificate_name):
+def local_tag(element):
+    return str(element.tag).split("}", 1)[-1].lower()
+
+
+def element_text(element):
+    if element is None or element.text is None:
+        return ""
+    return str(element.text).strip()
+
+
+def element_xml(element):
+    try:
+        return ET.tostring(element, encoding="unicode", method="xml")
+    except Exception:
+        return ""
+
+
+def text_matches_cert_name(value, cert_name):
+    return (value or "").strip().lower() == (cert_name or "").strip().lower()
+
+
+def element_contains_exact_cert_name(element, cert_name):
+    if text_matches_cert_name(element.attrib.get("name", ""), cert_name):
+        return True
+    if text_matches_cert_name(element_text(element), cert_name):
+        return True
+    for child in list(element):
+        if local_tag(child) in ["name", "certificate-name", "cert-name", "common-name", "cn"]:
+            if text_matches_cert_name(element_text(child), cert_name):
+                return True
+    return False
+
+
+def find_pa_cert_element(root, certificate_name):
     if not certificate_name:
         raise PaloApiError("certificate_name is required")
-    idx = xml_text.find(certificate_name)
-    return "" if idx < 0 else xml_text[max(0, idx - 1200): idx + 5000]
+    candidates = []
+    for element in root.iter():
+        if element_contains_exact_cert_name(element, certificate_name):
+            tag = local_tag(element)
+            if tag == "entry":
+                return element
+            candidates.append(element)
+    if candidates:
+        return sorted(candidates, key=lambda item: len(element_xml(item)))[0]
+    return None
+
+
+def first_child_text(element, names):
+    normalized = {name.lower() for name in names}
+    for child in element.iter():
+        if child is element:
+            continue
+        if local_tag(child) in normalized:
+            value = element_text(child)
+            if value:
+                return value
+    return ""
+
+
+def extract_pa_date_from_element(element):
+    date_fields = [
+        "not-after", "not_after", "notafter",
+        "not-valid-after", "not_valid_after",
+        "valid-to", "valid_to", "validto",
+        "expiry", "expires", "expire", "expiration",
+    ]
+    value = first_child_text(element, date_fields)
+    if value:
+        return value
+    text = element_xml(element)
+    return extract_first([
+        re.compile(r"(?:not-after|not_after|notafter|not-valid-after|not_valid_after|expiry|expires|expire|expiration|valid-to|valid_to|validto)[^A-Za-z0-9]{0,30}([^<\r\n]+)", re.IGNORECASE),
+        re.compile(r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+GMT)"),
+        re.compile(r"(\d{4}[/-]\d{2}[/-]\d{2}(?:\s+\d{2}:\d{2}:\d{2})?)"),
+    ], text)
+
+
+def extract_pa_fingerprint_from_element(element):
+    value = first_child_text(element, ["sha256", "sha-256", "fingerprint", "fingerprint-sha256", "fingerprint_sha256"])
+    if value:
+        return value
+    return extract_first([re.compile(r"(?:sha256|sha-256|fingerprint)[^A-Fa-f0-9]*([A-Fa-f0-9:]{40,})", re.IGNORECASE)], element_xml(element))
+
+
+def extract_pa_serial_from_element(element):
+    value = first_child_text(element, ["serial", "serial-number", "serial_number"])
+    if value:
+        return value
+    return extract_first([re.compile(r"(?:serial|serial-number|serial_number)[^A-Fa-f0-9]*([A-Fa-f0-9:]+)", re.IGNORECASE)], element_xml(element))
+
+
+def extract_pa_subject_from_element(element):
+    value = first_child_text(element, ["subject", "subject-name", "subject_name"])
+    if value:
+        return value
+    return extract_first([re.compile(r"(?:subject|subject-name|subject_name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE)], element_xml(element))
 
 
 def inspect_pa_certificate():
     config = load_config()
     cert_name = config.get("certificate_name", "")
-    _, xml_text = palo_op(config, "<show><sslmgr-store><config-certificate-info></config-certificate-info></sslmgr-store></show>")
-    block = find_pa_cert_block(xml_text, cert_name)
-    if not block:
+    root, _ = palo_op(config, "<show><sslmgr-store><config-certificate-info></config-certificate-info></sslmgr-store></show>")
+    cert_element = find_pa_cert_element(root, cert_name)
+    if cert_element is None:
         log(f"Certificate not found on Palo Alto: {cert_name}", "WARN", 330)
         raise PaloCertificateNotFound(f"Certificate not found on Palo Alto: {cert_name}")
-    expiry_raw = extract_first([
-        re.compile(r"(?:not-after|not_after|expiry|expires|expire|valid-to|valid_to)[^A-Za-z0-9]{0,30}([^<\r\n]+)", re.IGNORECASE),
-        re.compile(r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+GMT)"),
-        re.compile(r"(\d{4}[/-]\d{2}[/-]\d{2}(?:\s+\d{2}:\d{2}:\d{2})?)"),
-    ], block)
+    expiry_raw = extract_pa_date_from_element(cert_element)
     expiry_dt = parse_datetime_guess(expiry_raw)
     result = {
         "certificate_name": cert_name,
@@ -416,15 +504,16 @@ def inspect_pa_certificate():
         "not_after_raw": expiry_raw,
         "not_after_utc": expiry_dt.isoformat() if expiry_dt else "",
         "days_left": int((expiry_dt - datetime.now(timezone.utc)).total_seconds() // 86400) if expiry_dt else None,
-        "fingerprint_sha256": extract_first([re.compile(r"(?:sha256|sha-256|fingerprint)[^A-Fa-f0-9]*([A-Fa-f0-9:]{40,})", re.IGNORECASE)], block),
-        "serial_number_hex": extract_first([re.compile(r"(?:serial|serial-number)[^A-Fa-f0-9]*([A-Fa-f0-9:]+)", re.IGNORECASE)], block),
-        "subject": extract_first([re.compile(r"(?:subject|subject-name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE)], block),
+        "fingerprint_sha256": extract_pa_fingerprint_from_element(cert_element),
+        "serial_number_hex": extract_pa_serial_from_element(cert_element),
+        "subject": extract_pa_subject_from_element(cert_element),
+        "parser": "matched_xml_entry",
     }
     state = load_state()
     state["last_pa_certificate_inspection"] = result
     state["last_pa_certificate_inspection_time"] = utc_now_text()
     save_state(state)
-    log(f"Palo Alto certificate inspected: name={cert_name} days_left={result['days_left']}", "INFO", 331)
+    log(f"Palo Alto certificate inspected: name={cert_name} days_left={result['days_left']} parser={result['parser']}", "INFO", 331)
     return result
 
 
@@ -531,6 +620,9 @@ def test_win_acme():
 def evaluate_policy(compare_result):
     policy = load_config().get("policy", {})
     reasons = []
+    local_days_left = compare_result.get("local_days_left")
+    if local_days_left is not None and local_days_left < 0:
+        return {"action": "skip", "should_import": False, "reason": f"Local PFX certificate is expired ({local_days_left} days left); run renew-wacs before import"}
     if policy.get("block_on_domain_mismatch", True) and not compare_result.get("domain_match", False):
         return {"action": "block", "should_import": False, "reason": "Local PFX certificate does not match expected domain"}
     if not compare_result.get("remote_found", False):
@@ -615,7 +707,8 @@ def deploy_certificate(force=False):
     decision_result = policy_decision()
     decision = decision_result.get("decision", {})
     if not force and not decision.get("should_import", False):
-        if config.get("policy", {}).get("use_win_acme_fallback", True) and "not newer" in decision.get("reason", ""):
+        reason_text = decision.get("reason", "").lower()
+        if config.get("policy", {}).get("use_win_acme_fallback", True) and ("not newer" in reason_text or "expired" in reason_text):
             run_win_acme_renew()
             decision_result = policy_decision()
             decision = decision_result.get("decision", {})
