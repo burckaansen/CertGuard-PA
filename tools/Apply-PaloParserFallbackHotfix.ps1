@@ -3,6 +3,7 @@
 # The Palo operational response is a text certificate database, not structured
 # certificate XML. Multiple records may share the same CN, so the parser must
 # match the exact db-name and then disambiguate by certificate serial number.
+# Also fixes ISO-8601 parsing so local_newer is calculated correctly.
 
 $ErrorActionPreference = "Stop"
 
@@ -12,6 +13,41 @@ $Targets = @(
     "C:\ProgramData\CertGuard-PA\src\certguard_agent.py",
     "C:\Program Files\CertGuard-PA\src\certguard_agent.py"
 ) | Select-Object -Unique
+
+$DateParserBlock = @'
+def parse_datetime_guess(text):
+    if not text:
+        return None
+    raw = str(text).strip().replace("  ", " ")
+
+    # CertGuard stores parsed certificate dates as ISO-8601 strings.
+    # Parse these first so compare_certificates can evaluate local_newer.
+    try:
+        iso_raw = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        parsed = datetime.fromisoformat(iso_raw)
+        return cert_dt_to_utc(parsed)
+    except Exception:
+        pass
+
+    for fmt in [
+        "%b %d %H:%M:%S %Y GMT",
+        "%b %d %H:%M:%S %Y",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d",
+        "%Y-%m-%d",
+    ]:
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    try:
+        return cert_dt_to_utc(parsedate_to_datetime(raw))
+    except Exception:
+        return None
+
+
+'@
 
 $ParserBlock = @'
 def normalize_serial(value):
@@ -168,7 +204,14 @@ foreach ($Target in $Targets) {
 
     $Text = Get-Content -Path $Target -Raw
 
+    $Text = Replace-FunctionRange `
+        -Text $Text `
+        -StartPattern "def parse_datetime_guess\(text\):" `
+        -EndPattern "\r?\ndef normalize_fingerprint\(" `
+        -Replacement $DateParserBlock
+
     $StartPatterns = @(
+        "def normalize_serial\(value\):",
         "def xpath_literal\(value\):",
         "def inspect_pa_certificate\(\):"
     )
@@ -205,5 +248,5 @@ if (-not $Patched) {
     throw "No CertGuard-PA certguard_agent.py target was patched."
 }
 
-Write-Host "[INFO] Palo parser serial-match hotfix completed."
+Write-Host "[INFO] Palo parser and ISO datetime hotfix completed."
 Write-Host "[INFO] Next: .\tools\Build-StandaloneRelease.ps1"
