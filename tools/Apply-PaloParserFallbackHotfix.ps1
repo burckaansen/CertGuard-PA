@@ -11,22 +11,6 @@ $Targets = @(
     "C:\Program Files\CertGuard-PA\src\certguard_agent.py"
 ) | Select-Object -Unique
 
-$Old = @'
-def find_pa_cert_element(root, certificate_name):
-    if not certificate_name:
-        raise PaloApiError("certificate_name is required")
-    candidates = []
-    for element in root.iter():
-        if element_contains_exact_cert_name(element, certificate_name):
-            tag = local_tag(element)
-            if tag == "entry":
-                return element
-            candidates.append(element)
-    if candidates:
-        return sorted(candidates, key=lambda item: len(element_xml(item)))[0]
-    return None
-'@
-
 $New = @'
 def find_pa_cert_element(root, certificate_name):
     if not certificate_name:
@@ -77,16 +61,21 @@ foreach ($Target in $Targets) {
         continue
     }
 
-    if ($Text -notlike "*def find_pa_cert_element(root, certificate_name):*") {
+    $Start = $Text.IndexOf("def find_pa_cert_element(root, certificate_name):")
+    if ($Start -lt 0) {
         Write-Host "[WARN] Parser function not found, skipping: $Target"
         continue
     }
 
-    if ($Text -notlike "*$Old*") {
-        throw "Expected parser block was not found in $Target. Source may differ; inspect manually."
+    $End = $Text.IndexOf("`ndef first_child_text(element, names):", $Start)
+    if ($End -lt 0) {
+        $End = $Text.IndexOf("`r`ndef first_child_text(element, names):", $Start)
+    }
+    if ($End -lt 0) {
+        throw "Could not find parser function boundary in $Target. Source may differ; inspect manually."
     }
 
-    $Text = $Text.Replace($Old, $New)
+    $Text = $Text.Substring(0, $Start) + $New + "`r`n`r`n" + $Text.Substring($End + 1)
     Set-Content -Path $Target -Value $Text -Encoding UTF8
     Write-Host "[INFO] Patched: $Target"
     $Patched = $true
