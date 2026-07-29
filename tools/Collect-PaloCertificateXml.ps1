@@ -18,11 +18,17 @@ New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 $PythonScript = @'
 import importlib.util
 import re
+import sys
 from pathlib import Path
 
 agent_path = Path(r"__AGENT_PATH__")
 output_path = Path(r"__OUTPUT_PATH__")
 snippet_path = Path(r"__SNIPPET_PATH__")
+
+# Ensure sibling modules such as certguard_secrets.py are importable.
+agent_dir = str(agent_path.parent)
+if agent_dir not in sys.path:
+    sys.path.insert(0, agent_dir)
 
 spec = importlib.util.spec_from_file_location("certguard_agent_diag", str(agent_path))
 agent = importlib.util.module_from_spec(spec)
@@ -30,6 +36,12 @@ spec.loader.exec_module(agent)
 
 config = agent.load_config()
 cert_name = (config.get("certificate_name") or "").strip()
+api_key = agent.get_palo_api_key(config)
+if not api_key:
+    raise RuntimeError(
+        "Palo API key could not be resolved. Run this script under the same Windows account/context used to configure CertGuard-PA."
+    )
+
 root, xml_text = agent.palo_op(
     config,
     "<show><sslmgr-store><config-certificate-info></config-certificate-info></sslmgr-store></show>",
