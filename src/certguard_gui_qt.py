@@ -438,8 +438,11 @@ class MainWindow(QMainWindow):
     def build_wacs_page(self):
         p = FormPage("win-acme", "Optional renewal fallback before deployment.")
         wacs = self.cfg.get("win_acme", {})
-        self.fields["wacs_path"] = p.add_line("Managed wacs.exe Path", r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe")
-        self.fields["wacs_path"].setReadOnly(True)
+        managed_wacs_label = QLabel(r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe")
+        managed_wacs_label.setTextInteractionFlags(managed_wacs_label.textInteractionFlags())
+        p.form.addWidget(QLabel("Managed wacs.exe Path"), p.row, 0)
+        p.form.addWidget(managed_wacs_label, p.row, 1, 1, 2)
+        p.row += 1
         self.fields["wacs_base_uri"] = p.add_line("ACME Base URI", wacs.get("base_uri", "https://acme-v02.api.letsencrypt.org/"))
         self.fields["wacs_timeout"] = p.add_line("Renew Timeout Seconds", wacs.get("renew_timeout_seconds", 900))
         p.add_section("Cloudflare DNS-01", "CertGuard owns the DNS credential and provisions win-acme unattended. The token is stored with machine-scope DPAPI.")
