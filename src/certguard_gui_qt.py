@@ -63,7 +63,7 @@ DEFAULT_CONFIG = {
         "verify_after_import": True,
     },
     "win_acme": {
-        "path": "",
+        "path": r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe",
         "base_uri": "https://acme-v02.api.letsencrypt.org/",
         "renew_timeout_seconds": 900,
     },
@@ -432,7 +432,7 @@ class MainWindow(QMainWindow):
     def build_wacs_page(self):
         p = FormPage("win-acme", "Optional renewal fallback before deployment.")
         wacs = self.cfg.get("win_acme", {})
-        self.fields["wacs_path"] = p.add_line("wacs.exe Path", wacs.get("path", ""), browse="exe")
+        self.fields["wacs_path"] = p.add_line("Managed wacs.exe Path", wacs.get("path", r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe"))
         self.fields["wacs_base_uri"] = p.add_line("ACME Base URI", wacs.get("base_uri", "https://acme-v02.api.letsencrypt.org/"))
         self.fields["wacs_timeout"] = p.add_line("Renew Timeout Seconds", wacs.get("renew_timeout_seconds", 900))
         self.stack.addWidget(p)
