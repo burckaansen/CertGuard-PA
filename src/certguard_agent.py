@@ -640,13 +640,14 @@ def inspect_pa_certificate():
         }
 
     local_serial = ""
+    local_cert = None
     try:
-        local = inspect_pfx(
+        local_cert = inspect_pfx(
             config.get("pfx_path", ""),
             get_pfx_password(config),
             config.get("expected_domain", ""),
         )
-        local_serial = local.get("serial_number_hex", "")
+        local_serial = local_cert.get("serial_number_hex", "")
     except Exception:
         pass
 
@@ -658,6 +659,23 @@ def inspect_pa_certificate():
         serial_result = find_pa_cert_record_by_serial(xml_text, cert_name, local_serial)
         if serial_result is not None:
             result = serial_result
+
+            # Once Palo Alto output proves the exact certificate serial exists,
+            # use the local PFX metadata for fields that are intrinsic to that
+            # certificate. The operational DB text may contain adjacent/stale
+            # expiry/subject fields from another record even though the serial
+            # token itself is correct.
+            if (
+                local_cert
+                and normalize_serial(result.get("serial_number_hex"))
+                == normalize_serial(local_cert.get("serial_number_hex"))
+            ):
+                result["not_after_raw"] = local_cert.get("not_after_utc", "")
+                result["not_after_utc"] = local_cert.get("not_after_utc", "")
+                result["days_left"] = local_cert.get("days_left")
+                result["subject"] = local_cert.get("subject", "")
+                result["fingerprint_sha256"] = local_cert.get("fingerprint_sha256", "")
+                result["metadata_source"] = "local_pfx_by_serial_identity"
         elif result is not None and local_serial:
             result["match_mode"] = "name_match_serial_mismatch"
 
@@ -672,6 +690,7 @@ def inspect_pa_certificate():
     log(
         f"Palo Alto certificate inspected: name={cert_name} days_left={result['days_left']} "
         f"parser={result.get('parser', '')} match_mode={result.get('match_mode', '')} "
+        f"metadata_source={result.get('metadata_source', 'palo')} "
         f"serial={result.get('serial_number_hex', '')}",
         "INFO",
         331,
