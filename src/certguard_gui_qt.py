@@ -438,7 +438,7 @@ class MainWindow(QMainWindow):
     def build_wacs_page(self):
         p = FormPage("win-acme", "Optional renewal fallback before deployment.")
         wacs = self.cfg.get("win_acme", {})
-        self.fields["wacs_path"] = p.add_line("Managed wacs.exe Path", wacs.get("path", r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe"))
+        self.fields["wacs_path"] = p.add_line("Managed wacs.exe Path", r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe")\n        self.fields["wacs_path"].setReadOnly(True)
         self.fields["wacs_base_uri"] = p.add_line("ACME Base URI", wacs.get("base_uri", "https://acme-v02.api.letsencrypt.org/"))
         self.fields["wacs_timeout"] = p.add_line("Renew Timeout Seconds", wacs.get("renew_timeout_seconds", 900))
         p.add_section("Cloudflare DNS-01", "CertGuard owns the DNS credential and provisions win-acme unattended. The token is stored with machine-scope DPAPI.")
@@ -543,7 +543,7 @@ class MainWindow(QMainWindow):
                 "verify_after_import": self.checks["verify_after_import"].isChecked(),
             },
             "win_acme": {
-                "path": self.fields["wacs_path"].text().strip(),
+                "path": r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe",
                 "base_uri": self.fields["wacs_base_uri"].text().strip(),
                 "renew_timeout_seconds": int(self.fields["wacs_timeout"].text()),
             },
