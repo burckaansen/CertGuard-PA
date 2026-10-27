@@ -58,7 +58,7 @@ $Template = @'
 # ASCII only
 
 param(
-    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","GuiLegacy","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","TestWacs","RenewWacs","Health","Repair")]
+    [ValidateSet("Install","InstallSilent","Uninstall","Start","Stop","Restart","Status","Gui","GuiLegacy","Debug","Deploy","ForceDeploy","Policy","Compare","InspectPfx","TestApi","TestWacs","TestCloudflare","ProvisionWacs","RenewWacs","Health","Repair")]
     [string]$Action = "Install"
 )
 
@@ -373,6 +373,8 @@ switch ($Action) {
     "InspectPfx" { Ensure-EventSource; Invoke-Agent "inspect-pfx" }
     "TestApi" { Ensure-EventSource; Invoke-Agent "test-pa" }
     "TestWacs" { Ensure-EventSource; Invoke-Agent "test-wacs" }
+    "TestCloudflare" { Ensure-EventSource; Invoke-Agent "test-cloudflare" }
+    "ProvisionWacs" { Ensure-EventSource; Invoke-Agent "provision-wacs" }
     "RenewWacs" { Ensure-EventSource; Invoke-Agent "renew-wacs" }
     "Health" { Ensure-EventSource; Invoke-Agent "health" }
 }
