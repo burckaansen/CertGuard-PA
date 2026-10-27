@@ -780,10 +780,35 @@ def service_tick():
     try:
         health_check()
         result = policy_decision()
-        action = result["decision"]["action"]
+        decision = result["decision"]
+        action = decision["action"]
+        reason = decision.get("reason", "")
         log(f"Policy tick completed: action={action}", "INFO", 302)
-        if result["decision"].get("should_import"):
-            log(f"Certificate import required by scheduled service tick: {result['decision'].get('reason', 'policy matched')}", "WARN", 354)
+
+        if decision.get("should_import"):
+            log(
+                f"Certificate import required by scheduled service tick: {reason or 'policy matched'}",
+                "WARN",
+                354,
+            )
+            deploy_certificate(force=False)
+            return
+
+        # deploy_certificate() owns the win-acme fallback path. A scheduled tick
+        # must still enter it when the local certificate is not newer/has
+        # expired, otherwise renewal is never attempted and the service can
+        # watch both certificates expire while repeatedly returning action=skip.
+        config = load_config()
+        use_wacs = bool(config.get("policy", {}).get("use_win_acme_fallback", True))
+        reason_lower = reason.lower()
+        renewal_needed = "not newer" in reason_lower or "expired" in reason_lower
+
+        if use_wacs and renewal_needed:
+            log(
+                f"Scheduled renewal fallback required: {reason}",
+                "WARN",
+                355,
+            )
             deploy_certificate(force=False)
     except Exception as exc:
         log(f"Policy tick failed: {exc}", "ERROR", 303)
