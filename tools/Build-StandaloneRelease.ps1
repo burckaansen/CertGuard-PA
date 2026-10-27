@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $SrcDir = Join-Path $RepoRoot "src"
 $ReleaseDir = Join-Path $RepoRoot "releases"
+$VendorWacsDir = Join-Path $RepoRoot "vendor\win-acme"
 $OutputPath = Join-Path $ReleaseDir "Install-CertGuard-PA-Standalone.ps1"
 
 $Files = @(
@@ -26,6 +27,21 @@ function Convert-FileToBase64Text {
 }
 
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+
+$WacsZipB64 = ""
+$WacsExe = Join-Path $VendorWacsDir "wacs.exe"
+if (Test-Path $WacsExe) {
+    $TempZip = Join-Path $env:TEMP ("certguard-win-acme-" + [guid]::NewGuid().ToString("N") + ".zip")
+    try {
+        Compress-Archive -Path (Join-Path $VendorWacsDir "*") -DestinationPath $TempZip -Force
+        $WacsZipB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($TempZip))
+        Write-Host "[INFO] Bundled win-acme runtime: $VendorWacsDir"
+    } finally {
+        Remove-Item $TempZip -Force -ErrorAction SilentlyContinue
+    }
+} else {
+    Write-Warning "Bundled win-acme runtime not found. Run .\tools\Import-WinAcmeVendor.ps1 first."
+}
 
 $Embedded = @{}
 foreach ($file in $Files) {
@@ -57,6 +73,9 @@ $Gui = Join-Path $InstallDir "certguard_gui_qt.py"
 $GuiLegacy = Join-Path $InstallDir "certguard_gui.py"
 $ServiceHost = Join-Path $InstallDir "certguard_windows_service.py"
 $RuntimeInstaller = Join-Path $InstallDir "Install-CertGuard-PA.ps1"
+$ManagedWacsDir = Join-Path $InstallDir "win-acme"
+$ManagedWacsExe = Join-Path $ManagedWacsDir "wacs.exe"
+$EmbeddedWacsZip = "__WACS_ZIP_B64__"
 
 $EmbeddedFiles = @{
     "certguard_agent.py" = "__AGENT_B64__"
@@ -184,6 +203,25 @@ function Write-EmbeddedFile {
     [System.IO.File]::WriteAllBytes($TargetPath, $bytes)
 }
 
+function Deploy-WinAcme {
+    if ([string]::IsNullOrWhiteSpace($EmbeddedWacsZip)) {
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $ManagedWacsDir | Out-Null
+    $tempZip = Join-Path $env:TEMP ("certguard-win-acme-" + [guid]::NewGuid().ToString("N") + ".zip")
+    try {
+        [System.IO.File]::WriteAllBytes($tempZip, [Convert]::FromBase64String($EmbeddedWacsZip))
+        Get-ChildItem $ManagedWacsDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-Archive -Path $tempZip -DestinationPath $ManagedWacsDir -Force
+    } finally {
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path $ManagedWacsExe)) {
+        throw "Bundled win-acme deployment failed: $ManagedWacsExe"
+    }
+    Write-Host "[INFO] Bundled win-acme deployed to $ManagedWacsDir"
+}
+
 function Deploy-Files {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -191,6 +229,8 @@ function Deploy-Files {
     foreach ($name in $EmbeddedFiles.Keys) {
         Write-EmbeddedFile $name (Join-Path $InstallDir $name)
     }
+
+    Deploy-WinAcme
 
     try {
         $sourcePath = [System.IO.Path]::GetFullPath($PSCommandPath)
@@ -345,6 +385,7 @@ $Standalone = $Standalone.Replace("__GUI_QT_B64__", $Embedded["certguard_gui_qt.
 $Standalone = $Standalone.Replace("__SERVICE_HOST_B64__", $Embedded["certguard_windows_service.py"])
 $Standalone = $Standalone.Replace("__EVENTLOG_B64__", $Embedded["certguard_eventlog.py"])
 $Standalone = $Standalone.Replace("__SECRETS_B64__", $Embedded["certguard_secrets.py"])
+$Standalone = $Standalone.Replace("__WACS_ZIP_B64__", $WacsZipB64)
 
 [System.IO.File]::WriteAllText($OutputPath, $Standalone, [System.Text.Encoding]::UTF8)
 Write-Host "[INFO] Standalone release installer generated: $OutputPath"
