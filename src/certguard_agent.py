@@ -176,6 +176,14 @@ def parse_datetime_guess(text):
     if not text:
         return None
     raw = str(text).strip().replace("  ", " ")
+
+    try:
+        iso_raw = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        parsed = datetime.fromisoformat(iso_raw)
+        return cert_dt_to_utc(parsed)
+    except Exception:
+        pass
+
     for fmt in ["%b %d %H:%M:%S %Y GMT", "%b %d %H:%M:%S %Y", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d", "%Y-%m-%d"]:
         try:
             return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
@@ -189,6 +197,11 @@ def parse_datetime_guess(text):
 
 def normalize_fingerprint(value):
     return (value or "").replace(":", "").replace(" ", "").upper()
+
+
+def normalize_serial(value):
+    cleaned = re.sub(r"[^A-Fa-f0-9]", "", str(value or "")).upper()
+    return cleaned.lstrip("0") or ("0" if cleaned else "")
 
 
 def format_fingerprint(raw_bytes):
@@ -496,34 +509,137 @@ def extract_pa_subject_from_element(element):
     return extract_first([re.compile(r"(?:subject|subject-name|subject_name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE)], element_xml(element))
 
 
-def inspect_pa_certificate():
-    config = load_config()
-    cert_name = config.get("certificate_name", "")
-    root, _ = palo_op(config, "<show><sslmgr-store><config-certificate-info></config-certificate-info></sslmgr-store></show>")
-    cert_element = find_pa_cert_element(root, cert_name)
-    if cert_element is None:
-        log(f"Certificate not found on Palo Alto: {cert_name}", "WARN", 330)
-        raise PaloCertificateNotFound(f"Certificate not found on Palo Alto: {cert_name}")
-    expiry_raw = extract_pa_date_from_element(cert_element)
+def find_pa_cert_record_by_serial(xml_text, cert_name, local_serial):
+    target_serial = normalize_serial(local_serial)
+    if not target_serial:
+        return None
+
+    try:
+        root = ET.fromstring(xml_text)
+        result_node = root.find(".//result")
+        raw_text = "\n".join(part for part in result_node.itertext()) if result_node is not None else xml_text
+    except Exception:
+        raw_text = xml_text or ""
+
+    lines = raw_text.splitlines()
+    candidate_indexes = []
+    for index, line in enumerate(lines):
+        compact = re.sub(r"[^A-Fa-f0-9]", "", line)
+        if target_serial and target_serial in normalize_serial(compact):
+            candidate_indexes.append(index)
+
+    if not candidate_indexes:
+        return None
+
+    cert_name_lower = (cert_name or "").lower()
+    chosen = candidate_indexes[0]
+    for index in candidate_indexes:
+        start = max(0, index - 20)
+        end = min(len(lines), index + 21)
+        block_text = "\n".join(lines[start:end])
+        if cert_name_lower and cert_name_lower in block_text.lower():
+            chosen = index
+            break
+
+    start = max(0, chosen - 20)
+    end = min(len(lines), chosen + 21)
+    block = "\n".join(lines[start:end])
+
+    expiry_raw = extract_first([
+        re.compile(r"(?:not-after|not_after|notafter|not-valid-after|not_valid_after|expiry|expires|expire|expiration|valid-to|valid_to|validto)[^A-Za-z0-9]{0,30}([^<\r\n]+)", re.IGNORECASE),
+        re.compile(r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+GMT)"),
+        re.compile(r"(\d{4}[/-]\d{2}[/-]\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?)?)"),
+    ], block)
+
+    serial_raw = ""
+    for line in lines[max(0, chosen - 2):min(len(lines), chosen + 3)]:
+        matches = re.findall(r"[A-Fa-f0-9]{20,}", line)
+        for match in matches:
+            if normalize_serial(match) == target_serial:
+                serial_raw = match.upper()
+                break
+        if serial_raw:
+            break
+    if not serial_raw:
+        serial_raw = str(local_serial)
+
+    subject = extract_first([
+        re.compile(r"(?:subject|subject-name|subject_name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE)
+    ], block)
+
     expiry_dt = parse_datetime_guess(expiry_raw)
-    result = {
+    return {
         "certificate_name": cert_name,
         "found": True,
         "not_after_raw": expiry_raw,
         "not_after_utc": expiry_dt.isoformat() if expiry_dt else "",
         "days_left": int((expiry_dt - datetime.now(timezone.utc)).total_seconds() // 86400) if expiry_dt else None,
-        "fingerprint_sha256": extract_pa_fingerprint_from_element(cert_element),
-        "serial_number_hex": extract_pa_serial_from_element(cert_element),
-        "subject": extract_pa_subject_from_element(cert_element),
-        "parser": "matched_xml_entry",
+        "fingerprint_sha256": "",
+        "serial_number_hex": serial_raw,
+        "subject": subject,
+        "parser": "op_db_record_serial_match",
+        "match_mode": "serial_match",
     }
+
+
+def inspect_pa_certificate():
+    config = load_config()
+    cert_name = config.get("certificate_name", "")
+    root, xml_text = palo_op(config, "<show><sslmgr-store><config-certificate-info></config-certificate-info></sslmgr-store></show>")
+    cert_element = find_pa_cert_element(root, cert_name)
+
+    result = None
+    if cert_element is not None:
+        expiry_raw = extract_pa_date_from_element(cert_element)
+        expiry_dt = parse_datetime_guess(expiry_raw)
+        result = {
+            "certificate_name": cert_name,
+            "found": True,
+            "not_after_raw": expiry_raw,
+            "not_after_utc": expiry_dt.isoformat() if expiry_dt else "",
+            "days_left": int((expiry_dt - datetime.now(timezone.utc)).total_seconds() // 86400) if expiry_dt else None,
+            "fingerprint_sha256": extract_pa_fingerprint_from_element(cert_element),
+            "serial_number_hex": extract_pa_serial_from_element(cert_element),
+            "subject": extract_pa_subject_from_element(cert_element),
+            "parser": "matched_xml_entry",
+        }
+
+    local_serial = ""
+    try:
+        local = inspect_pfx(
+            config.get("pfx_path", ""),
+            get_pfx_password(config),
+            config.get("expected_domain", ""),
+        )
+        local_serial = local.get("serial_number_hex", "")
+    except Exception:
+        pass
+
+    if result is None or (
+        local_serial
+        and normalize_serial(result.get("serial_number_hex"))
+        and normalize_serial(result.get("serial_number_hex")) != normalize_serial(local_serial)
+    ):
+        serial_result = find_pa_cert_record_by_serial(xml_text, cert_name, local_serial)
+        if serial_result is not None:
+            result = serial_result
+
+    if result is None:
+        log(f"Certificate not found on Palo Alto: {cert_name}", "WARN", 330)
+        raise PaloCertificateNotFound(f"Certificate not found on Palo Alto: {cert_name}")
+
     state = load_state()
     state["last_pa_certificate_inspection"] = result
     state["last_pa_certificate_inspection_time"] = utc_now_text()
     save_state(state)
-    log(f"Palo Alto certificate inspected: name={cert_name} days_left={result['days_left']} parser={result['parser']}", "INFO", 331)
+    log(
+        f"Palo Alto certificate inspected: name={cert_name} days_left={result['days_left']} "
+        f"parser={result.get('parser', '')} match_mode={result.get('match_mode', '')} "
+        f"serial={result.get('serial_number_hex', '')}",
+        "INFO",
+        331,
+    )
     return result
-
 
 def compare_certificates():
     config = load_config()
@@ -534,13 +650,19 @@ def compare_certificates():
         remote = {"found": False, "error": str(exc), "certificate_name": config.get("certificate_name", "")}
     local_fp = normalize_fingerprint(local.get("fingerprint_sha256"))
     remote_fp = normalize_fingerprint(remote.get("fingerprint_sha256"))
+    local_serial = normalize_serial(local.get("serial_number_hex"))
+    remote_serial = normalize_serial(remote.get("serial_number_hex"))
+    same_fingerprint = bool(local_fp and remote_fp and local_fp == remote_fp)
+    same_serial = bool(local_serial and remote_serial and local_serial == remote_serial)
     local_dt = parse_datetime_guess(local.get("not_after_utc"))
     remote_dt = parse_datetime_guess(remote.get("not_after_utc"))
     result = {
         "local": local,
         "remote": remote,
         "remote_found": bool(remote.get("found")),
-        "same_fingerprint": bool(local_fp and remote_fp and local_fp == remote_fp),
+        "same_fingerprint": same_fingerprint,
+        "same_serial": same_serial,
+        "same_certificate": bool(same_fingerprint or same_serial),
         "local_newer": bool(local_dt and remote_dt and local_dt > remote_dt),
         "local_days_left": local.get("days_left"),
         "remote_days_left": remote.get("days_left"),
@@ -753,8 +875,8 @@ def evaluate_policy(compare_result):
             return {"action": "import", "should_import": True, "reason": "Palo Alto certificate is missing and first import is enabled"}
         return {"action": "skip", "should_import": False, "reason": "Palo Alto certificate is missing and first import is disabled"}
     if policy.get("require_local_newer_or_different", True):
-        if compare_result.get("same_fingerprint", False):
-            return {"action": "skip", "should_import": False, "reason": "Local and Palo Alto certificates have the same fingerprint"}
+        if compare_result.get("same_certificate", False):
+            return {"action": "skip", "should_import": False, "reason": "Local and Palo Alto certificates are the same certificate"}
         if not compare_result.get("local_newer", False):
             reasons.append("local certificate is not newer")
     if policy.get("auto_import_only_if_expiring", True):
