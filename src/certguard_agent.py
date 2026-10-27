@@ -390,6 +390,47 @@ def palo_commit(config):
     return {"submitted": True, "job_id": job_id}
 
 
+def palo_wait_for_job(config, job_id, timeout_seconds=300, poll_seconds=2):
+    if not job_id:
+        return {"completed": True, "job_id": "", "status": "NO_JOB_ID", "result": ""}
+
+    deadline = time.time() + max(1, int(timeout_seconds))
+    last_status = ""
+    last_result = ""
+    last_details = ""
+
+    while time.time() < deadline:
+        root, _ = palo_op(config, f"<show><jobs><id>{job_id}</id></jobs></show>")
+        job = root.find(".//job")
+        if job is None:
+            time.sleep(poll_seconds)
+            continue
+
+        last_status = (job.findtext("status", default="") or "").strip()
+        last_result = (job.findtext("result", default="") or "").strip()
+        last_details = (job.findtext("details", default="") or "").strip()
+
+        if last_status.upper() == "FIN":
+            if last_result.upper() in ("OK", "SUCCESS"):
+                log(f"Commit job completed successfully: job={job_id}", "INFO", 371)
+                return {
+                    "completed": True,
+                    "job_id": job_id,
+                    "status": last_status,
+                    "result": last_result,
+                    "details": last_details,
+                }
+            raise PaloApiError(
+                f"Commit job failed: job={job_id} status={last_status} result={last_result} details={last_details}"
+            )
+
+        time.sleep(poll_seconds)
+
+    raise PaloApiError(
+        f"Commit job timeout: job={job_id} status={last_status} result={last_result}"
+    )
+
+
 def test_palo_api():
     config = load_config()
     root, _ = palo_op(config, "<show><system><info></info></system></show>")
@@ -969,14 +1010,23 @@ def deploy_certificate(force=False):
         try:
             log(f"Deployment attempt {attempt}/{retry_count}", "WARN", 352)
             import_result = import_certificate_once()
+
+            commit_result = {"submitted": False, "reason": "commit disabled"}
+            if bool(config.get("commit_after_import", False)):
+                commit_result = palo_commit(config)
+                commit_result["job"] = palo_wait_for_job(
+                    config,
+                    commit_result.get("job_id", ""),
+                    timeout_seconds=300,
+                    poll_seconds=2,
+                )
+
             verify_result = {"verified": True, "reason": "verification disabled"}
             if verify_after_import:
                 verify_result = verify_import(import_result.get("local_fingerprint_sha256"))
                 if not verify_result.get("verified"):
                     raise PaloApiError(f"Import verification failed: {verify_result.get('reason')}")
-            commit_result = {"submitted": False, "reason": "commit disabled"}
-            if bool(config.get("commit_after_import", False)):
-                commit_result = palo_commit(config)
+
             result = {"deployed": True, "skipped": False, "attempt": attempt, "import": import_result, "verify": verify_result, "commit": commit_result}
             state["last_deploy"] = result
             state["last_deploy_time"] = utc_now_text()
