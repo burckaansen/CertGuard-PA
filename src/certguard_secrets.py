@@ -89,11 +89,14 @@ def encrypt_config_secrets(config):
 
     api_key = result.pop("palo_api_key", "")
     pfx_password = result.pop("pfx_password", "")
+    cloudflare_api_token = result.pop("cloudflare_api_token", "")
 
     if api_key:
         result["palo_api_key_dpapi"] = protect_secret(api_key, True)
     if pfx_password:
         result["pfx_password_dpapi"] = protect_secret(pfx_password, True)
+    if cloudflare_api_token:
+        result["cloudflare_api_token_dpapi"] = protect_secret(cloudflare_api_token, True)
 
     return result
 
