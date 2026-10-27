@@ -46,6 +46,9 @@ DEFAULT_CONFIG = {
     "pfx_path": r"C:\certs\test.example.com.pfx",
     "pfx_password": "",
     "pfx_password_dpapi": "",
+    "cloudflare_api_token": "",
+    "cloudflare_api_token_dpapi": "",
+    "cloudflare_zone": "",
     "expected_domain": "test.example.com",
     "commit_after_import": False,
     "policy": {
@@ -155,9 +158,12 @@ def save_config_secure(data):
         secure_data["palo_api_key_dpapi"] = existing.get("palo_api_key_dpapi")
     if not secure_data.get("pfx_password_dpapi") and existing.get("pfx_password_dpapi"):
         secure_data["pfx_password_dpapi"] = existing.get("pfx_password_dpapi")
+    if not secure_data.get("cloudflare_api_token_dpapi") and existing.get("cloudflare_api_token_dpapi"):
+        secure_data["cloudflare_api_token_dpapi"] = existing.get("cloudflare_api_token_dpapi")
 
     secure_data.pop("palo_api_key", None)
     secure_data.pop("pfx_password", None)
+    secure_data.pop("cloudflare_api_token", None)
     CONFIG_PATH.write_text(json.dumps(secure_data, indent=2), encoding="utf-8")
 
 
@@ -435,6 +441,9 @@ class MainWindow(QMainWindow):
         self.fields["wacs_path"] = p.add_line("Managed wacs.exe Path", wacs.get("path", r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe"))
         self.fields["wacs_base_uri"] = p.add_line("ACME Base URI", wacs.get("base_uri", "https://acme-v02.api.letsencrypt.org/"))
         self.fields["wacs_timeout"] = p.add_line("Renew Timeout Seconds", wacs.get("renew_timeout_seconds", 900))
+        p.add_section("Cloudflare DNS-01", "CertGuard owns the DNS credential and provisions win-acme unattended. The token is stored with machine-scope DPAPI.")
+        self.fields["cloudflare_zone"] = p.add_line("Cloudflare Zone", self.cfg.get("cloudflare_zone", ""))
+        self.fields["cloudflare_api_token"] = p.add_line("Cloudflare API Token", "", password=True)
         self.stack.addWidget(p)
 
     def build_service_page(self):
@@ -476,6 +485,12 @@ class MainWindow(QMainWindow):
         self.add_action_button(row2, "Deploy", "agent", "deploy", primary=True)
         self.add_action_button(row2, "Install Service", "installer", "InstallSilent")
         layout.addLayout(row2)
+        row3 = QHBoxLayout()
+        row3.setSpacing(10)
+        self.add_action_button(row3, "Test Cloudflare", "agent", "test-cloudflare")
+        self.add_action_button(row3, "Create / Repair Renewal", "agent", "provision-wacs", primary=True)
+        self.add_action_button(row3, "Renew Now", "agent", "renew-wacs")
+        layout.addLayout(row3)
         self.log_box = QTextEdit()
         self.log_box.setObjectName("logBox")
         self.log_box.setReadOnly(True)
@@ -510,6 +525,8 @@ class MainWindow(QMainWindow):
             "expected_domain": self.fields["expected_domain"].text().strip(),
             "pfx_path": self.fields["pfx_path"].text().strip(),
             "pfx_password": self.fields["pfx_password"].text(),
+            "cloudflare_zone": self.fields["cloudflare_zone"].text().strip(),
+            "cloudflare_api_token": self.fields["cloudflare_api_token"].text().strip(),
             "commit_after_import": self.checks["commit_after_import"].isChecked(),
             "policy": {
                 "import_if_pa_cert_missing": self.checks["import_if_pa_cert_missing"].isChecked(),
