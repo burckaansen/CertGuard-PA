@@ -57,6 +57,9 @@ DEFAULT_CONFIG = {
     "pfx_path": "",
     "pfx_password": "",
     "pfx_password_dpapi": "",
+    "cloudflare_api_token": "",
+    "cloudflare_api_token_dpapi": "",
+    "cloudflare_zone": "",
     "expected_domain": "",
     "commit_after_import": False,
     "policy": {
@@ -239,6 +242,10 @@ def get_pfx_password(config):
 
 def get_palo_api_key(config):
     return get_secret(config, "palo_api_key", "palo_api_key_dpapi")
+
+
+def get_cloudflare_api_token(config):
+    return get_secret(config, "cloudflare_api_token", "cloudflare_api_token_dpapi")
 
 
 def inspect_pfx(pfx_path, password, expected_domain=""):
@@ -594,6 +601,115 @@ def run_win_acme_renew():
     return {"renewed": True, "returncode": returncode}
 
 
+def test_cloudflare():
+    config = load_config()
+    token = get_cloudflare_api_token(config).strip()
+    zone = (config.get("cloudflare_zone") or "").strip()
+    if not token:
+        raise CertGuardError("Cloudflare API token is not configured")
+    if not zone:
+        raise CertGuardError("cloudflare_zone is not configured")
+    url = "https://api.cloudflare.com/client/v4/zones?" + urllib.parse.urlencode({"name": zone})
+    request = urllib.request.Request(
+        url=url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "CertGuard-PA/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        raise CertGuardError(f"Cloudflare API request failed: {exc}") from exc
+    if not payload.get("success"):
+        errors = payload.get("errors") or []
+        raise CertGuardError(f"Cloudflare API rejected the token: {errors}")
+    zones = payload.get("result") or []
+    exact = [item for item in zones if str(item.get("name", "")).lower() == zone.lower()]
+    if not exact:
+        raise CertGuardError(f"Cloudflare zone not visible to token: {zone}")
+    result = {
+        "connected": True,
+        "zone": zone,
+        "zone_id": exact[0].get("id", ""),
+        "status": exact[0].get("status", ""),
+    }
+    state = load_state()
+    state["last_cloudflare_test"] = result
+    state["last_cloudflare_test_time"] = utc_now_text()
+    save_state(state)
+    log(f"Cloudflare API connected: zone={zone} status={result['status']}", "INFO", 384)
+    return result
+
+
+def provision_win_acme_renewal():
+    config = load_config()
+    win_acme = config.get("win_acme", {})
+    wacs_path = (win_acme.get("path") or "").strip()
+    base_uri = win_acme.get("base_uri", "https://acme-v02.api.letsencrypt.org/")
+    timeout = int(win_acme.get("renew_timeout_seconds", 900))
+    domain = (config.get("expected_domain") or "").strip()
+    pfx_path = Path(config.get("pfx_path", ""))
+    token = get_cloudflare_api_token(config).strip()
+    pfx_password = get_pfx_password(config)
+
+    if not wacs_path:
+        raise CertGuardError("win-acme path is not configured")
+    if not Path(wacs_path).exists():
+        raise FileNotFoundError(f"wacs.exe not found: {wacs_path}")
+    if not domain:
+        raise CertGuardError("expected_domain is required for WACS provisioning")
+    if not token:
+        raise CertGuardError("Cloudflare API token is not configured")
+    if not pfx_password:
+        raise CertGuardError("PFX password is not configured")
+    if not pfx_path.parent:
+        raise CertGuardError("PFX path is invalid")
+
+    pfx_path.parent.mkdir(parents=True, exist_ok=True)
+
+    args = [
+        wacs_path,
+        "--source", "manual",
+        "--host", domain,
+        "--validation", "cloudflare",
+        "--cloudflareapitoken", token,
+        "--order", "single",
+        "--csr", "rsa",
+        "--store", "pfxfile",
+        "--pfxfilepath", str(pfx_path.parent),
+        "--pfxfilename", pfx_path.stem,
+        "--pfxpassword", str(pfx_password),
+        "--installation", "none",
+        "--baseuri", base_uri,
+        "--accepttos",
+        "--notaskscheduler",
+    ]
+
+    log(f"Provisioning win-acme renewal for {domain} using Cloudflare DNS-01", "WARN", 385)
+    returncode, output = run_process_capture(args, timeout)
+    output = output[-12000:]
+    state = load_state()
+    state["last_wacs_provision_time"] = utc_now_text()
+    state["last_wacs_provision_returncode"] = returncode
+    state["last_wacs_provision_output"] = output
+    save_state(state)
+    if returncode != 0:
+        log(f"win-acme renewal provisioning failed: {output[-1200:]}", "ERROR", 386)
+        raise CertGuardError(f"win-acme provisioning failed with code {returncode}")
+    log("win-acme renewal provisioned successfully; Task Scheduler creation was disabled", "INFO", 387)
+    return {
+        "provisioned": True,
+        "returncode": returncode,
+        "domain": domain,
+        "pfx_path": str(pfx_path),
+        "task_scheduler_disabled": True,
+    }
+
+
 def test_win_acme():
     config = load_config()
     wacs_path = config.get("win_acme", {}).get("path", "")
@@ -764,6 +880,11 @@ def health_check():
         issues.append("pfx_path missing or not found")
     if not get_pfx_password(config):
         issues.append("pfx_password missing")
+    if config.get("policy", {}).get("use_win_acme_fallback", True):
+        if not get_cloudflare_api_token(config):
+            issues.append("cloudflare_api_token missing")
+        if not config.get("cloudflare_zone"):
+            issues.append("cloudflare_zone missing")
     result = {"ok": not issues, "issues": issues, "time": utc_now_text()}
     state = load_state()
     state["last_health_check"] = result
@@ -837,7 +958,7 @@ def print_json(data):
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for command in ["service-loop", "debug", "health", "inspect-pfx", "test-pa", "inspect-pa-cert", "compare", "policy", "deploy", "force-deploy", "test-wacs", "renew-wacs"]:
+    for command in ["service-loop", "debug", "health", "inspect-pfx", "test-pa", "inspect-pa-cert", "compare", "policy", "deploy", "force-deploy", "test-wacs", "test-cloudflare", "provision-wacs", "renew-wacs"]:
         sub.add_parser(command)
     args = parser.parse_args()
     try:
@@ -863,6 +984,10 @@ def main():
             print_json(deploy_certificate(force=True))
         elif args.cmd == "test-wacs":
             print_json(test_win_acme())
+        elif args.cmd == "test-cloudflare":
+            print_json(test_cloudflare())
+        elif args.cmd == "provision-wacs":
+            print_json(provision_win_acme_renewal())
         elif args.cmd == "renew-wacs":
             print_json(run_win_acme_renew())
     except CertGuardError as exc:
