@@ -75,6 +75,8 @@ $ServiceHost = Join-Path $InstallDir "certguard_windows_service.py"
 $RuntimeInstaller = Join-Path $InstallDir "Install-CertGuard-PA.ps1"
 $ManagedWacsDir = Join-Path $InstallDir "win-acme"
 $ManagedWacsExe = Join-Path $ManagedWacsDir "wacs.exe"
+$ManagedWacsDataDir = Join-Path $InstallDir "win-acme-data"
+$ManagedWacsLogDir = Join-Path $LogDir "win-acme"
 $EmbeddedWacsZip = "__WACS_ZIP_B64__"
 
 $EmbeddedFiles = @{
@@ -219,7 +221,20 @@ function Deploy-WinAcme {
     if (-not (Test-Path $ManagedWacsExe)) {
         throw "Bundled win-acme deployment failed: $ManagedWacsExe"
     }
+
+    New-Item -ItemType Directory -Force -Path $ManagedWacsDataDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $ManagedWacsLogDir | Out-Null
+    $settingsDefault = Join-Path $ManagedWacsDir "settings_default.json"
+    $settingsPath = Join-Path $ManagedWacsDir "settings.json"
+    if (Test-Path $settingsDefault) {
+        $settings = Get-Content $settingsDefault -Raw | ConvertFrom-Json
+        $settings.Client.ClientName = "CertGuard-PA-WACS"
+        $settings.Client.ConfigurationPath = $ManagedWacsDataDir
+        $settings.Client.LogPath = $ManagedWacsLogDir
+        $settings | ConvertTo-Json -Depth 100 | Set-Content $settingsPath -Encoding UTF8
+    }
     Write-Host "[INFO] Bundled win-acme deployed to $ManagedWacsDir"
+    Write-Host "[INFO] win-acme state isolated at $ManagedWacsDataDir"
 }
 
 function Deploy-Files {
