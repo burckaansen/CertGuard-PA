@@ -563,27 +563,33 @@ def find_pa_cert_record_by_serial(xml_text, cert_name, local_serial):
         raw_text = xml_text or ""
 
     lines = raw_text.splitlines()
-    candidate_indexes = []
-    for index, line in enumerate(lines):
-        compact = re.sub(r"[^A-Fa-f0-9]", "", line)
-        if target_serial and target_serial in normalize_serial(compact):
-            candidate_indexes.append(index)
+    matches = []
 
-    if not candidate_indexes:
+    # Only accept an actual serial token from Palo Alto output. Never infer or
+    # substitute the local serial, because long hexadecimal fields such as
+    # fingerprints/key IDs can otherwise create a false "same certificate".
+    for index, line in enumerate(lines):
+        tokens = re.findall(r"(?:[A-Fa-f0-9]{2}:){8,}[A-Fa-f0-9]{2}|[A-Fa-f0-9]{20,}", line)
+        for token in tokens:
+            if normalize_serial(token) == target_serial:
+                matches.append((index, token))
+                break
+
+    if not matches:
         return None
 
     cert_name_lower = (cert_name or "").lower()
-    chosen = candidate_indexes[0]
-    for index in candidate_indexes:
+    chosen_index, serial_raw = matches[0]
+    for index, token in matches:
         start = max(0, index - 20)
         end = min(len(lines), index + 21)
         block_text = "\n".join(lines[start:end])
         if cert_name_lower and cert_name_lower in block_text.lower():
-            chosen = index
+            chosen_index, serial_raw = index, token
             break
 
-    start = max(0, chosen - 20)
-    end = min(len(lines), chosen + 21)
+    start = max(0, chosen_index - 20)
+    end = min(len(lines), chosen_index + 21)
     block = "\n".join(lines[start:end])
 
     expiry_raw = extract_first([
@@ -591,18 +597,6 @@ def find_pa_cert_record_by_serial(xml_text, cert_name, local_serial):
         re.compile(r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+GMT)"),
         re.compile(r"(\d{4}[/-]\d{2}[/-]\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?)?)"),
     ], block)
-
-    serial_raw = ""
-    for line in lines[max(0, chosen - 2):min(len(lines), chosen + 3)]:
-        matches = re.findall(r"[A-Fa-f0-9]{20,}", line)
-        for match in matches:
-            if normalize_serial(match) == target_serial:
-                serial_raw = match.upper()
-                break
-        if serial_raw:
-            break
-    if not serial_raw:
-        serial_raw = str(local_serial)
 
     subject = extract_first([
         re.compile(r"(?:subject|subject-name|subject_name)[^\r\n<]*[:=]\s*([^\r\n<]+)", re.IGNORECASE)
@@ -616,7 +610,7 @@ def find_pa_cert_record_by_serial(xml_text, cert_name, local_serial):
         "not_after_utc": expiry_dt.isoformat() if expiry_dt else "",
         "days_left": int((expiry_dt - datetime.now(timezone.utc)).total_seconds() // 86400) if expiry_dt else None,
         "fingerprint_sha256": "",
-        "serial_number_hex": serial_raw,
+        "serial_number_hex": serial_raw.upper(),
         "subject": subject,
         "parser": "op_db_record_serial_match",
         "match_mode": "serial_match",
@@ -715,8 +709,21 @@ def compare_certificates():
     state["last_compare"] = result
     state["last_compare_time"] = utc_now_text()
     save_state(state)
-    log(f"Compare completed: remote_found={result['remote_found']} same={result['same_fingerprint']} local_newer={result['local_newer']} domain_match={result['domain_match']}", "INFO", 340)
-    log(f"Certificate comparison summary: local_days_left={result.get('local_days_left')} remote_days_left={result.get('remote_days_left')} remote_found={result.get('remote_found')} same_fingerprint={result.get('same_fingerprint')}", "INFO", 341)
+    log(
+        f"Compare completed: remote_found={result['remote_found']} "
+        f"same_fingerprint={result['same_fingerprint']} same_serial={result['same_serial']} "
+        f"local_newer={result['local_newer']} domain_match={result['domain_match']}",
+        "INFO",
+        340,
+    )
+    log(
+        f"Certificate comparison summary: local_days_left={result.get('local_days_left')} "
+        f"remote_days_left={result.get('remote_days_left')} remote_found={result.get('remote_found')} "
+        f"same_certificate={result.get('same_certificate')} "
+        f"local_serial={local.get('serial_number_hex', '')} remote_serial={remote.get('serial_number_hex', '')}",
+        "INFO",
+        341,
+    )
     return result
 
 
