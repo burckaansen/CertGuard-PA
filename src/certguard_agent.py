@@ -47,6 +47,7 @@ BASE_DIR = Path(r"C:\ProgramData\CertGuard-PA")
 CONFIG_PATH = BASE_DIR / "config.json"
 STATE_PATH = BASE_DIR / "state.json"
 LOG_PATH = BASE_DIR / "logs" / "certguard-pa.log"
+MANAGED_WACS_PATH = BASE_DIR / "win-acme" / "wacs.exe"
 
 DEFAULT_CONFIG = {
     "firewall_host": "",
@@ -77,7 +78,7 @@ DEFAULT_CONFIG = {
         "verify_after_import": True
     },
     "win_acme": {
-        "path": "",
+        "path": r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe",
         "base_uri": "https://acme-v02.api.letsencrypt.org/",
         "renew_timeout_seconds": 900
     },
@@ -576,10 +577,16 @@ def run_process_capture(args, timeout):
     return proc.returncode, decode_process_output(proc.stdout)
 
 
+def get_wacs_path(config):
+    if MANAGED_WACS_PATH.exists():
+        return str(MANAGED_WACS_PATH)
+    return (config.get("win_acme", {}).get("path") or "").strip()
+
+
 def run_win_acme_renew():
     config = load_config()
     win_acme = config.get("win_acme", {})
-    wacs_path = win_acme.get("path", "")
+    wacs_path = get_wacs_path(config)
     base_uri = win_acme.get("base_uri", "https://acme-v02.api.letsencrypt.org/")
     timeout = int(win_acme.get("renew_timeout_seconds", 900))
     if not wacs_path:
@@ -648,7 +655,7 @@ def test_cloudflare():
 def provision_win_acme_renewal():
     config = load_config()
     win_acme = config.get("win_acme", {})
-    wacs_path = (win_acme.get("path") or "").strip()
+    wacs_path = get_wacs_path(config)
     base_uri = win_acme.get("base_uri", "https://acme-v02.api.letsencrypt.org/")
     timeout = int(win_acme.get("renew_timeout_seconds", 900))
     domain = (config.get("expected_domain") or "").strip()
@@ -712,7 +719,7 @@ def provision_win_acme_renewal():
 
 def test_win_acme():
     config = load_config()
-    wacs_path = config.get("win_acme", {}).get("path", "")
+    wacs_path = get_wacs_path(config)
     if not wacs_path:
         raise CertGuardError("win-acme path is not configured")
     path_obj = Path(wacs_path)
