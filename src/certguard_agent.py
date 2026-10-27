@@ -1039,6 +1039,30 @@ def verify_import(expected_fingerprint, expected_serial):
     }
 
 
+def should_run_renewal_fallback(decision_result, config):
+    policy = config.get("policy", {})
+    if not bool(policy.get("use_win_acme_fallback", True)):
+        return False
+
+    compare_result = decision_result.get("compare", {}) if isinstance(decision_result, dict) else {}
+    decision = decision_result.get("decision", {}) if isinstance(decision_result, dict) else {}
+    local_days_left = compare_result.get("local_days_left")
+    threshold = int(policy.get("auto_import_expiry_threshold_days", 7))
+    reason = str(decision.get("reason", "")).lower()
+
+    # Primary trigger: the local certificate itself is approaching expiry.
+    # This covers the common case where local and Palo are the same certificate;
+    # policy correctly skips import, but renewal must still be attempted.
+    if local_days_left is not None and local_days_left <= threshold:
+        return True
+
+    # Compatibility triggers for earlier policy reasons.
+    if "not newer" in reason or "expired" in reason:
+        return True
+
+    return False
+
+
 def deploy_certificate(force=False):
     config = load_config()
     state = load_state()
@@ -1049,8 +1073,7 @@ def deploy_certificate(force=False):
     decision_result = policy_decision()
     decision = decision_result.get("decision", {})
     if not force and not decision.get("should_import", False):
-        reason_text = decision.get("reason", "").lower()
-        if config.get("policy", {}).get("use_win_acme_fallback", True) and ("not newer" in reason_text or "expired" in reason_text):
+        if should_run_renewal_fallback(decision_result, config):
             run_win_acme_renew()
             decision_result = policy_decision()
             decision = decision_result.get("decision", {})
@@ -1158,13 +1181,12 @@ def service_tick():
         # expired, otherwise renewal is never attempted and the service can
         # watch both certificates expire while repeatedly returning action=skip.
         config = load_config()
-        use_wacs = bool(config.get("policy", {}).get("use_win_acme_fallback", True))
-        reason_lower = reason.lower()
-        renewal_needed = "not newer" in reason_lower or "expired" in reason_lower
-
-        if use_wacs and renewal_needed:
+        if should_run_renewal_fallback(result, config):
+            compare_result = result.get("compare", {})
+            local_days_left = compare_result.get("local_days_left")
+            threshold = int(config.get("policy", {}).get("auto_import_expiry_threshold_days", 7))
             log(
-                f"Scheduled renewal fallback required: {reason}",
+                f"Scheduled renewal fallback required: local_days_left={local_days_left} threshold={threshold} reason={reason}",
                 "WARN",
                 355,
             )
