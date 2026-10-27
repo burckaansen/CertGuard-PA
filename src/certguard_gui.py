@@ -28,6 +28,9 @@ DEFAULTS = {
     "pfx_path": r"C:\certs\test.example.com.pfx",
     "pfx_password": "",
     "pfx_password_dpapi": "",
+    "cloudflare_api_token": "",
+    "cloudflare_api_token_dpapi": "",
+    "cloudflare_zone": "",
     "expected_domain": "test.example.com",
     "commit_after_import": False,
     "policy": {
@@ -82,9 +85,12 @@ def save_config(data):
         secure_data["palo_api_key_dpapi"] = existing.get("palo_api_key_dpapi")
     if not secure_data.get("pfx_password_dpapi") and existing.get("pfx_password_dpapi"):
         secure_data["pfx_password_dpapi"] = existing.get("pfx_password_dpapi")
+    if not secure_data.get("cloudflare_api_token_dpapi") and existing.get("cloudflare_api_token_dpapi"):
+        secure_data["cloudflare_api_token_dpapi"] = existing.get("cloudflare_api_token_dpapi")
 
     secure_data.pop("palo_api_key", None)
     secure_data.pop("pfx_password", None)
+    secure_data.pop("cloudflare_api_token", None)
     CONFIG_PATH.write_text(json.dumps(secure_data, indent=2), encoding="utf-8")
 
 
@@ -201,6 +207,8 @@ def wizard():
     add_entry(p4, "Managed wacs.exe Path", "wacs_path", win_acme.get("path", r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe"))
     add_entry(p4, "ACME Base URI", "wacs_base_uri", win_acme.get("base_uri", "https://acme-v02.api.letsencrypt.org/"))
     add_entry(p4, "Renew Timeout Seconds", "wacs_timeout", win_acme.get("renew_timeout_seconds", 900))
+    add_entry(p4, "Cloudflare Zone", "cloudflare_zone", cfg.get("cloudflare_zone", ""))
+    add_entry(p4, "Cloudflare API Token", "cloudflare_api_token", "", secret=True)
 
     p5 = add_page("Step 5 - Deploy and Service", "Configure commit, retry and service interval settings.")
     deploy = cfg.get("deploy", {})
@@ -231,6 +239,8 @@ def wizard():
             "expected_domain": entries["expected_domain"].get().strip(),
             "pfx_path": entries["pfx_path"].get().strip(),
             "pfx_password": entries["pfx_password"].get(),
+            "cloudflare_zone": entries["cloudflare_zone"].get().strip(),
+            "cloudflare_api_token": entries["cloudflare_api_token"].get().strip(),
             "commit_after_import": bool(vars_["commit_after_import"].get()),
             "policy": {
                 "import_if_pa_cert_missing": bool(vars_["import_if_pa_cert_missing"].get()),
@@ -301,6 +311,11 @@ def wizard():
     ttk.Button(action_row2, text="Deploy", command=lambda: run_action("deploy")).pack(side="left", padx=4)
     ttk.Button(action_row2, text="Renew WACS", command=lambda: run_action("renew-wacs")).pack(side="left", padx=4)
     ttk.Button(action_row2, text="Debug Folder", command=open_debug_panel).pack(side="left", padx=4)
+
+    action_row3 = ttk.Frame(p6)
+    action_row3.pack(fill="x", pady=(8, 0))
+    ttk.Button(action_row3, text="Test Cloudflare", command=lambda: run_action("test-cloudflare")).pack(side="left", padx=4)
+    ttk.Button(action_row3, text="Create / Repair Renewal", command=lambda: run_action("provision-wacs")).pack(side="left", padx=4)
 
     def show_page():
         for frame, _, _ in pages:
