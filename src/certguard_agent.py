@@ -664,6 +664,8 @@ def inspect_pa_certificate():
         serial_result = find_pa_cert_record_by_serial(xml_text, cert_name, local_serial)
         if serial_result is not None:
             result = serial_result
+        elif result is not None and local_serial:
+            result["match_mode"] = "name_match_serial_mismatch"
 
     if result is None:
         log(f"Certificate not found on Palo Alto: {cert_name}", "WARN", 330)
@@ -966,21 +968,49 @@ def import_certificate_once():
     xml_text = palo_multipart_import(config, params, Path(config.get("pfx_path", "")))
     parse_palo_response(xml_text)
     log(f"Certificate import completed: {config.get('certificate_name')} block_private_key_export={block_private_key_export}", "INFO", 360)
-    return {"imported": True, "local_fingerprint_sha256": local.get("fingerprint_sha256"), "block_private_key_export": block_private_key_export}
+    return {
+        "imported": True,
+        "local_fingerprint_sha256": local.get("fingerprint_sha256"),
+        "local_serial_number_hex": local.get("serial_number_hex"),
+        "local_not_after_utc": local.get("not_after_utc"),
+        "block_private_key_export": block_private_key_export,
+    }
 
 
-def verify_import(expected_fingerprint):
+def verify_import(expected_fingerprint, expected_serial):
     try:
         remote = inspect_pa_certificate()
     except PaloCertificateNotFound:
         return {"verified": False, "reason": "certificate not found after import"}
-    expected = normalize_fingerprint(expected_fingerprint)
-    actual = normalize_fingerprint(remote.get("fingerprint_sha256"))
-    if expected and actual and expected == actual:
-        return {"verified": True, "reason": "fingerprint matched", "remote": remote}
-    if not actual:
-        return {"verified": True, "reason": "certificate found but Palo fingerprint was not available", "remote": remote}
-    return {"verified": False, "reason": "fingerprint mismatch", "remote": remote}
+
+    expected_fp = normalize_fingerprint(expected_fingerprint)
+    actual_fp = normalize_fingerprint(remote.get("fingerprint_sha256"))
+    expected_serial_norm = normalize_serial(expected_serial)
+    actual_serial_norm = normalize_serial(remote.get("serial_number_hex"))
+
+    if expected_fp and actual_fp:
+        if expected_fp == actual_fp:
+            return {"verified": True, "reason": "fingerprint matched", "remote": remote}
+        return {
+            "verified": False,
+            "reason": f"fingerprint mismatch: expected={expected_fp} actual={actual_fp}",
+            "remote": remote,
+        }
+
+    if expected_serial_norm and actual_serial_norm:
+        if expected_serial_norm == actual_serial_norm:
+            return {"verified": True, "reason": "serial matched", "remote": remote}
+        return {
+            "verified": False,
+            "reason": f"serial mismatch: expected={expected_serial_norm} actual={actual_serial_norm}",
+            "remote": remote,
+        }
+
+    return {
+        "verified": False,
+        "reason": "Palo Alto did not expose a fingerprint or serial that can prove the imported certificate is active",
+        "remote": remote,
+    }
 
 
 def deploy_certificate(force=False):
@@ -1023,7 +1053,10 @@ def deploy_certificate(force=False):
 
             verify_result = {"verified": True, "reason": "verification disabled"}
             if verify_after_import:
-                verify_result = verify_import(import_result.get("local_fingerprint_sha256"))
+                verify_result = verify_import(
+                    import_result.get("local_fingerprint_sha256"),
+                    import_result.get("local_serial_number_hex"),
+                )
                 if not verify_result.get("verified"):
                     raise PaloApiError(f"Import verification failed: {verify_result.get('reason')}")
 
