@@ -204,8 +204,16 @@ def wizard():
 
     p4 = add_page("Step 4 - win-acme", "Configure optional win-acme fallback renewal.")
     win_acme = cfg.get("win_acme", {})
-    managed_wacs_entry = add_entry(p4, "Managed wacs.exe Path", "wacs_path", r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe")
-    managed_wacs_entry.configure(state="readonly")
+    managed_wacs_row = ttk.Frame(p4)
+    managed_wacs_row.pack(fill="x", pady=7)
+    ttk.Label(managed_wacs_row, text="Managed wacs.exe Path", width=30).pack(side="left")
+    ttk.Label(
+        managed_wacs_row,
+        text=r"C:\ProgramData\CertGuard-PA\win-acme\wacs.exe",
+        relief="sunken",
+        anchor="w",
+        padding=(6, 4),
+    ).pack(side="left", fill="x", expand=True)
     add_entry(p4, "ACME Base URI", "wacs_base_uri", win_acme.get("base_uri", "https://acme-v02.api.letsencrypt.org/"))
     add_entry(p4, "Renew Timeout Seconds", "wacs_timeout", win_acme.get("renew_timeout_seconds", 900))
     add_entry(p4, "Cloudflare Zone", "cloudflare_zone", cfg.get("cloudflare_zone", ""))
